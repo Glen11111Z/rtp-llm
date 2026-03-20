@@ -218,6 +218,7 @@ public:
 #endif
     BufferPtr              softmax(const SoftmaxParams& params) override;
     GreedyOutput           sampleGreedy(const GreedyParams& params) override;
+    BeamSearchOutput       sampleBeamSearch(const BeamSearchParams& params) override;
     MemoryStatus           getDeviceMemoryStatus() override;
     BufferPtr              loraLinearWithActivation(const LoraLinearWithActivationParams& params) override;
     BufferPtr              mhaQKVGemm(const AttentionLayerParams& params) override;

@@ -21,7 +21,12 @@
 #include <unordered_map>
 #include <vector>
 
+#if USING_ROCM
+#include "rtp_llm/cpp/rocm/cuda_shims.h"
+#include "rtp_llm/cpp/rocm/hip_host_utils.h"
+#else
 #include "rtp_llm/cpp/cuda/cuda_host_utils.h"
+#endif
 
 namespace tensorrt_llm::common {
 

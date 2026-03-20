@@ -80,6 +80,7 @@ cc_library(
         "//rtp_llm/cpp/cuda:nccl_util",
         "//rtp_llm/cpp/pybind:th_utils",
         "//rtp_llm/cpp/devices/torch_impl:torch_beam_search_op_impl",
+        "//3rdparty/trt_beam_search:trt_beam_search_rocm_impl",
     ] + torch_deps() + select({
         "@//:using_aiter_src": [
             "@aiter_src//:module_aiter_enum",

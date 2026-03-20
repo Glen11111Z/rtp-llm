@@ -10,6 +10,8 @@ test_copts = [
 ] + rocm_copts()
 
 test_linkopts = [
+    "-L/opt/rocm/lib/llvm/lib/clang/19/lib/linux",
+    "-lclang_rt.builtins-x86_64",
     "-L/opt/rocm/lib",
     "-lhipsolver",
     "-lhiprtc",
@@ -87,6 +89,21 @@ cc_test(
     deps=test_deps + [
         "//rtp_llm/cpp/rocm:speculative_sampling"
     ],
+    tags = ["rocm"],
+    exec_properties = {'gpu':'MI308X'},
+)
+
+cc_test(
+    name = "beam_search_op_test",
+    srcs = [
+        "ROCmBeamSearchOpTest.cc",
+    ],
+    data = [],
+    env = device_test_envs(),
+    copts = test_copts + copts(),
+    linkopts = test_linkopts,
+    deps = test_deps,
+    linkstatic = True,
     tags = ["rocm"],
     exec_properties = {'gpu':'MI308X'},
 )
