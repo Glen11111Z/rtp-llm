@@ -529,7 +529,7 @@ absl::Status NormalBatchStreamProcessor::dispatch(const StreamGroups& stream_gro
         auto token_size      = stream->currentExecuteTokenSize();
 
         // TODO(zhangjianning.zjn): the lifetime of captures need more careful thoughts if we go fully async
-        auto task = [&, batch_idx_in, batch_idx_out, token_offset]() {
+        auto task = [&, stream, batch_idx_in, batch_idx_out, token_offset]() {
             dispatchSingleStream(
                 stream, merge_outputs, batch_idx_in, batch_idx_out, token_offset, return_all_probs, new_tokens_all);
         };
