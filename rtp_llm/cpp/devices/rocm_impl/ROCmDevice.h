@@ -182,6 +182,7 @@ public:
     }
     void                  copy(const CopyParams& params) override;
     void                  multiMergeCopy(const MultiMergeCopyParams& params) override;
+    void                  batchCopy(const BatchCopyParams& params) override;
     void                  noBlockCopy(const CopyParams& params) override;
     void                  bufMemset(Buffer& buf, int val, DeviceStream stream = DeviceStream::DEFAULT) override;
     TransposeOutput       transpose(const TransposeParams& params) override;
