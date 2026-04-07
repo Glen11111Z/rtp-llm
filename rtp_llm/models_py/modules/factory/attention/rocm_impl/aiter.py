@@ -32,6 +32,7 @@ class FMHAParams(ParamsBase):
         attn_inputs: PyAttentionInputs,
         is_prefill: bool = True,
         enable_cuda_graph: bool = True,
+        v1_kv_layout: bool = False,
     ):
         super().__init__()
         self.enable_cuda_graph = enable_cuda_graph
@@ -80,6 +81,26 @@ class FMHAParams(ParamsBase):
             self.prefix_lengths = prefix_lengths
             self.token_q_num = input_lengths.sum().item()
             self.token_kv_num = kv_lengths.sum().item()
+
+            # Compute block_table remapping for v1_kv_layout to avoid OOM
+            block_table = self.kv_cache_block_id_device
+            if v1_kv_layout and block_table is not None and block_table.numel() > 0:
+                used_ids = block_table.reshape(-1).unique()
+                remap = torch.empty(
+                    used_ids.max().item() + 1,
+                    dtype=block_table.dtype,
+                    device=block_table.device,
+                )
+                remap[used_ids] = torch.arange(
+                    used_ids.shape[0],
+                    dtype=block_table.dtype,
+                    device=block_table.device,
+                )
+                self.used_block_ids = used_ids
+                self.remapped_block_table = remap[block_table]
+            else:
+                self.used_block_ids = None
+                self.remapped_block_table = None
         # Decode mode
         else:
             input_lengths = attn_inputs.input_lengths
@@ -136,15 +157,20 @@ class AiterPrefillAttnOp:
         self.fmha_params = FMHAParams(
             attn_inputs=attn_inputs,
             is_prefill=True,
+            v1_kv_layout=self.v1_kv_layout,
         )
         return self.fmha_params
 
-    def _reshape_kv_cache_vectorized(self, kv_cache_base):
+    def _reshape_kv_cache_vectorized(self, kv_cache_base, fmha_params):
         """Reshape kv_cache_base into 5D VECTORIZED_LAYOUT for mha_batch_prefill.
 
-        Returns (k_cache_5d, v_cache_5d):
+        When v1_kv_layout is True, uses precomputed used_block_ids and
+        remapped_block_table from fmha_params to avoid per-layer torch.unique.
+
+        Returns (k_cache_5d, v_cache_5d, new_block_table):
             K: [num_blocks, num_kv_heads, head_dim/vs, page_size, vs]
             V: [num_blocks, num_kv_heads, page_size/vs, head_dim, vs]
+            new_block_table: remapped block_table if subset was used, else None
         """
         block_num = kv_cache_base.shape[0]
         hk = self.head_num_kv
@@ -163,17 +189,31 @@ class AiterPrefillAttnOp:
             # V1 kernel writes V via non-template getVLocalIdx → linear [hd, ps].
             # Target layout for mha_batch_prefill: [ps//vs, hd, vs].
             # Permute [hd, ps] → [hd, ps//vs, vs] → [ps//vs, hd, vs].
-            v_linear = flat[:, 1, :, :].view(block_num, hk, hd, ps)
-            v_cache = (
-                v_linear.reshape(block_num, hk, hd, ps // vs, vs)
-                .permute(0, 1, 3, 2, 4)
-                .contiguous()
-            )
+            #
+            # To avoid OOM from .contiguous() on the entire cache, only permute
+            # the blocks actually referenced by block_table.
+            used_ids = fmha_params.used_block_ids
+            if used_ids is not None:
+                v_subset = flat[used_ids, 1, :, :].view(used_ids.shape[0], hk, hd, ps)
+                v_cache_subset = (
+                    v_subset.reshape(used_ids.shape[0], hk, hd, ps // vs, vs)
+                    .permute(0, 1, 3, 2, 4)
+                    .contiguous()
+                )
+                k_cache = k_cache[used_ids]
+                return k_cache, v_cache_subset, fmha_params.remapped_block_table
+            else:
+                v_linear = flat[:, 1, :, :].view(block_num, hk, hd, ps)
+                v_cache = (
+                    v_linear.reshape(block_num, hk, hd, ps // vs, vs)
+                    .permute(0, 1, 3, 2, 4)
+                    .contiguous()
+                )
         else:
             # ASM kernel writes V via getVLocalIdx<BASE> → vectorized [ps//vs, hd, vs].
             v_cache = flat[:, 1, :, :].view(block_num, hk, ps // vs, hd, vs)
 
-        return k_cache, v_cache
+        return k_cache, v_cache, None
 
     def _split_qkv_fp8(self, qkv_fp8):
         """Split FP8 QKV buffer into separate Q, K, V tensors."""
@@ -259,8 +299,12 @@ class AiterPrefillAttnOp:
             return self._forward_varlen(qkv, fmha_params)
 
         # Unified path: always use mha_batch_prefill from paged KV cache
-        k_cache, v_cache = self._reshape_kv_cache_vectorized(kv_cache.kv_cache_base)
         block_table = fmha_params.kv_cache_block_id_device
+        k_cache, v_cache, remapped_block_table = self._reshape_kv_cache_vectorized(
+            kv_cache.kv_cache_base, fmha_params
+        )
+        if remapped_block_table is not None:
+            block_table = remapped_block_table
         cu_seqlens_q = fmha_params.cu_seqlens_q.to(q_tensor.device)
 
         # prefix_lengths: default to zeros when no prefix (unified logic)
