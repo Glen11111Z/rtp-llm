@@ -133,6 +133,7 @@ requirement([
     "aiter",
     "fastsafetensors",
     "pybind11_stubgen",
+    "viztracer",
 ] + tensorrt + deep + flashinfer_with_cache + flashmla + rtp_kernel + flashattn)
 
 filegroup(
@@ -423,6 +424,7 @@ py_library(
         ":concurrent_log_handler",
         ":blobfile",
         ":partial_json_parser",
+        ":viztracer",
     ],
     data = jit_deps(),
     imports = ["."],
@@ -613,6 +615,7 @@ whl_reqs = [
     "portalocker",
     "concurrent_log_handler",
     "apache-tvm-ffi",
+    "viztracer",
 ] + whl_deps() + platform_deps() + xft_dep
 
 py_wheel(

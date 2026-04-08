@@ -66,6 +66,7 @@ py_library(
         "//rtp_llm:openai",
         "//rtp_llm:torch",
         "//rtp_llm:transformers",
+        "//rtp_llm:viztracer",
         "//rtp_llm/test/utils:test_util",
     ] + select({
         "@//:using_rocm": [

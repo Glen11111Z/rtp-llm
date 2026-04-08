@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import gc
 import logging
 import socket
@@ -28,6 +29,7 @@ from rtp_llm.frontend.frontend_server import FrontendServer
 from rtp_llm.frontend.frontend_worker import get_dp_addrs_from_world_info
 from rtp_llm.openai.api_datatype import ChatCompletionRequest
 from rtp_llm.utils.grpc_client_wrapper import GrpcClientWrapper
+from rtp_llm.utils.trace_util import trace_scope
 from rtp_llm.utils.util import AtomicCounter, async_request_server
 from rtp_llm.utils.version_info import VersionInfo
 
@@ -114,6 +116,21 @@ class FrontendApp(object):
         raise RuntimeError(
             "Backend health_check did not become ready within %ds" % timeout_s
         )
+
+    @contextlib.contextmanager
+    def trace_request(self, enable_trace: bool, method: str):
+        file_name = None
+
+        if enable_trace:
+            file_name = (
+                f"frontend_{method}_trace"
+                f"_s{self.server_config.frontend_server_id}"
+                f"_r{self.server_config.rank_id}"
+                f"_ts{int(time.time() * 1000)}.json"
+            )
+
+        with trace_scope(enable_trace, file_name=file_name):
+            yield
 
     def start(self):
         self.frontend_server.start()
@@ -305,28 +322,37 @@ class FrontendApp(object):
 
         @app.post("/")
         async def inference(req: Union[str, Dict[Any, Any]], raw_request: RawRequest):
-            # compat for huggingface-pipeline request endpoint
-            global active_requests
-            active_requests.increment()
-            try:
-                if self.frontend_server.is_embedding:
-                    return await self.frontend_server.embedding(req, raw_request)
-                else:
-                    return await self.frontend_server.inference(req, raw_request)
-            finally:
-                active_requests.decrement()
+            enable_trace = isinstance(req, dict) and req.get("generate_config", {}).get(
+                "gen_timeline", False
+            )
+            with self.trace_request(enable_trace, "inference"):
+                # compat for huggingface-pipeline request endpoint
+                global active_requests
+                active_requests.increment()
+                try:
+                    if self.frontend_server.is_embedding:
+                        return await self.frontend_server.embedding(req, raw_request)
+                    else:
+                        return await self.frontend_server.inference(req, raw_request)
+                finally:
+                    active_requests.decrement()
 
         @app.post("/chat/completions")
         @app.post("/v1/chat/completions")
         async def chat_completion(
             request: ChatCompletionRequest, raw_request: RawRequest
         ):
-            global active_requests
-            active_requests.increment()
-            try:
-                return await self.frontend_server.chat_completion(request, raw_request)
-            finally:
-                active_requests.decrement()
+            extra_configs = request.extra_configs
+            enable_trace = extra_configs is not None and extra_configs.gen_timeline
+            with self.trace_request(enable_trace, "chat_completion"):
+                global active_requests
+                active_requests.increment()
+                try:
+                    return await self.frontend_server.chat_completion(
+                        request, raw_request
+                    )
+                finally:
+                    active_requests.decrement()
 
         @app.post("/update_scheduler_info")
         async def update_scheduler_info(req: Union[str, Dict[Any, Any]]):
