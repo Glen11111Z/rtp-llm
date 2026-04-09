@@ -278,8 +278,8 @@ class AiterPrefillAttnOp:
         # Split into Q/K/V and use flash_attn_varlen_fp8_pertensor_func.
         if q_tensor.dtype == torch.float8_e4m3fnuz:
             query, key, value = self._split_qkv_fp8(q_tensor)
-            cu_seqlens_q = fmha_params.cu_seqlens_q.to(query.device)
-            cu_seqlens_k = fmha_params.cu_seqlens_k.to(query.device)
+            cu_seqlens_q = fmha_params.cu_seqlens_q.to(query.device, non_blocking=True)
+            cu_seqlens_k = fmha_params.cu_seqlens_k.to(query.device, non_blocking=True)
             res = aiter.flash_attn_varlen_fp8_pertensor_func(
                 query,
                 key,
@@ -305,7 +305,7 @@ class AiterPrefillAttnOp:
         )
         if remapped_block_table is not None:
             block_table = remapped_block_table
-        cu_seqlens_q = fmha_params.cu_seqlens_q.to(q_tensor.device)
+        cu_seqlens_q = fmha_params.cu_seqlens_q.to(q_tensor.device, non_blocking=True)
 
         # prefix_lengths: default to zeros when no prefix (unified logic)
         batch_size = cu_seqlens_q.shape[0] - 1
@@ -313,14 +313,18 @@ class AiterPrefillAttnOp:
             fmha_params.prefix_lengths is not None
             and fmha_params.prefix_lengths.numel() > 0
         ):
-            prefix_lengths_device = fmha_params.prefix_lengths.to(q_tensor.device)
+            prefix_lengths_device = fmha_params.prefix_lengths.to(
+                q_tensor.device, non_blocking=True
+            )
         else:
             prefix_lengths_device = torch.zeros(
                 batch_size, dtype=torch.int32, device=q_tensor.device
             )
 
         input_lengths = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
-        seqlen_k = (prefix_lengths_device + input_lengths).to(torch.int32)
+        seqlen_k = (prefix_lengths_device + input_lengths).to(
+            torch.int32, non_blocking=True
+        )
 
         softmax_scale = 1.0 / math.sqrt(self.head_dim)
         kv_indptr = cu_seqlens_q
