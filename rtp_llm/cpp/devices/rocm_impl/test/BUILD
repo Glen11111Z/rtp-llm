@@ -107,3 +107,20 @@ cc_test(
     tags = ["rocm"],
     exec_properties = {'gpu':'MI308X'},
 )
+
+cc_test(
+    name = "top_k_last_dim_op_test",
+    srcs = [
+        "ROCmTopkLastDimOpTest.cc",
+    ],
+    data = [],
+    env = device_test_envs(),
+    copts = test_copts + copts(),
+    linkopts = test_linkopts,
+    deps = test_deps + [
+        "//3rdparty/trt_beam_search:trt_beam_search_rocm_impl",
+    ],
+    linkstatic = True,
+    tags = ["rocm"],
+    exec_properties = {'gpu':'MI308X'},
+)

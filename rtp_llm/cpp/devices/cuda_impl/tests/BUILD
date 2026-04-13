@@ -67,6 +67,20 @@ cc_test(
     exec_properties = {'gpu':'A10'},
 )
 
+cc_test(
+    name = "top_k_last_dim_op_test",
+    srcs = [
+        "CudaTopkLastDimOpTest.cc",
+    ],
+    data = [],
+    env = test_envs,
+    copts = copts(),
+    deps = test_deps + [
+        "//3rdparty/trt_beam_search:trt_beam_search_impl",
+    ],
+    exec_properties = {'gpu':'A10'},
+)
+
 cc_library(
     name = "test_cuda_graph_runner_libs",
     srcs = [
