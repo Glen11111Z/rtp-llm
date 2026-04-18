@@ -31,6 +31,7 @@ cc_library(
     ]),
     hdrs = glob([
         "*.h",
+        "**/*.hpp",
     ]),
     deps = [
         "//rtp_llm/cpp/rocm:rocm_types_hdr",
@@ -51,6 +52,7 @@ cc_library(
     hdrs = glob([
         "*.h",
         "**/*.h",
+        "**/*.hpp",
         "**/*.cuh",
     ]),
     deps = select({
