@@ -14,6 +14,7 @@
 #include "rtp_llm/cpp/kernels/csr_logits.h"
 #include "rtp_llm/cpp/core/BufferHelper.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
+#include "rtp_llm/cpp/utils/ProfilingScope.h"
 
 #if USING_CUDA
 #include "rtp_llm/cpp/devices/cuda_impl/CudaDevice.h"
@@ -248,6 +249,7 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     if (async_initialized_) {
         return;
     }
+    RTP_LLM_PROFILE_SCOPE("csr.ensure_initialized");
 
     // --- 等待后台 CPU 构建完成 ---
     std::shared_ptr<CSRIndex<token_num>> csr_index;
@@ -262,6 +264,7 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     }
 
     // --- H2D 拷贝（在主线程执行，确保 GPU context 正确）---
+    RTP_LLM_PROFILE_SCOPE("csr.h2d_init");
     rtp_llm::BufferPtr d_indptr;
     {
         auto cpu_buf = vector2Buffer(csr_index->indptr);
@@ -336,8 +339,9 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
     processor_ptr->pending_is_multi_seq_ = is_multi_seq;
     processor_ptr->pending_input_length_ = generate_input->inputLength();
 
-    // 捕获所需数据（按值拷贝，避免引用 generate_input 生命周期）
-    auto    ele_rq_ids_copy = generate_input->generate_config->ele_rq_ids;
+    // 捕获 shared_ptr<GenerateConfig>，避免 ele_rq_ids 字符串数据深拷贝。
+    // config 引用计数+1 保证异步任务完成前数据有效，且内存占用远小于 vector<string> 拷贝。
+    auto    config          = generate_input->generate_config;
     int32_t vocab_size_copy = vocab_size;
 
     // WARNING: std::launch::async 会为每个请求新建一个 OS 线程。
@@ -345,8 +349,9 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
     // 若后续扩展到高 QPS 小请求场景，请改用线程池（如 autil::LockFreeThreadPool）。
     processor_ptr->async_cpu_init_future_ = std::async(
         std::launch::async,
-        [ele_rq_ids_copy, vocab_size_copy]() -> std::shared_ptr<CSRIndex<token_num>> {
-            auto origin_rq_ids = split_strings<token_num>(ele_rq_ids_copy);
+        [config, vocab_size_copy]() -> std::shared_ptr<CSRIndex<token_num>> {
+            RTP_LLM_PROFILE_SCOPE("csr.async_build");
+            auto origin_rq_ids = split_strings<token_num>(config->ele_rq_ids);
             std::sort(origin_rq_ids.begin(), origin_rq_ids.end());
             auto csr_index = std::make_shared<CSRIndex<token_num>>();
             bool success   = build_csr_from_fresh_data<token_num>(origin_rq_ids, *csr_index, vocab_size_copy);

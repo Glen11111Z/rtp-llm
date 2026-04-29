@@ -6,6 +6,7 @@
 #include <fstream>
 #include <algorithm>
 #include <iostream>
+#include <cstdint>
 
 // token_num：每条约束路径的语义ID长度（token数量）
 static const int token_num = 3;
@@ -82,18 +83,18 @@ bool build_csr_from_fresh_data(const std::vector<sids<N>>& fresh_data,
     }
 
     // --- 2. is_new[i][j]：第i行是否在第j层引入了新的前缀树节点 ---
-    // 用 vector<vector<bool>> 代替 C99 可变长数组（VLA）
-    std::vector<std::vector<bool>> is_new(data_size, std::vector<bool>(N, false));
+    // 扁平数组避免 M 次小堆分配（原 vector<vector<bool>> 在 50k 数据时产生 10 万次分配）
+    std::vector<char> is_new(data_size * N, 0);
     for (int j = 0; j < N; ++j) {
-        is_new[0][j] = true;
+        is_new[j] = 1;
     }
     for (int i = 1; i < data_size; ++i) {
-        is_new[i][0] = (fresh_data[i].rq_id[0] != fresh_data[i - 1].rq_id[0]);
+        is_new[i * N + 0] = (fresh_data[i].rq_id[0] != fresh_data[i - 1].rq_id[0]) ? 1 : 0;
         for (int j = 1; j < N; ++j) {
-            if (!is_new[i][j - 1] && fresh_data[i].rq_id[j] == fresh_data[i - 1].rq_id[j]) {
-                is_new[i][j] = false;
+            if (!is_new[i * N + (j - 1)] && fresh_data[i].rq_id[j] == fresh_data[i - 1].rq_id[j]) {
+                is_new[i * N + j] = 0;
             } else {
-                is_new[i][j] = true;
+                is_new[i * N + j] = 1;
             }
         }
     }
@@ -101,19 +102,19 @@ bool build_csr_from_fresh_data(const std::vector<sids<N>>& fresh_data,
     // --- 3. 状态ID分配 ---
     // 第0层节点：state_id = token_id + 1（占用 state 1..vocab_size）
     // 更深层节点：从 vocab_size+1 开始顺序分配
-    std::vector<std::vector<int>> state_ids(data_size, std::vector<int>(N - 1, 0));
+    std::vector<int> state_ids(data_size * (N - 1), 0);
     for (int i = 0; i < data_size; ++i) {
-        state_ids[i][0] = fresh_data[i].rq_id[0] + 1;
+        state_ids[i * (N - 1) + 0] = fresh_data[i].rq_id[0] + 1;
     }
 
     int num_states = vocab_size;  // 下一个可用状态ID - 1
     for (int depth = 1; depth < N - 1; ++depth) {
         for (int i = 0; i < data_size; ++i) {
-            if (i == 0 || is_new[i][depth]) {
+            if (i == 0 || is_new[i * N + depth]) {
                 ++num_states;
-                state_ids[i][depth] = num_states;
+                state_ids[i * (N - 1) + depth] = num_states;
             } else {
-                state_ids[i][depth] = state_ids[i - 1][depth];
+                state_ids[i * (N - 1) + depth] = state_ids[(i - 1) * (N - 1) + depth];
             }
         }
     }
@@ -136,10 +137,10 @@ bool build_csr_from_fresh_data(const std::vector<sids<N>>& fresh_data,
     for (int depth = 1; depth < N; ++depth) {
         int start_pos = static_cast<int>(parent_ids_vec.size());
         for (int i = 0; i < data_size; ++i) {
-            if (is_new[i][depth]) {
-                int parent = state_ids[i][depth - 1];
+            if (is_new[i * N + depth]) {
+                int parent = state_ids[i * (N - 1) + (depth - 1)];
                 int token  = fresh_data[i].rq_id[depth];
-                int child  = (depth < N - 1) ? state_ids[i][depth] : 0;  // 0 表示终止状态
+                int child  = (depth < N - 1) ? state_ids[i * (N - 1) + depth] : 0;  // 0 表示终止状态
                 parent_ids_vec.push_back(parent);
                 token_ids_vec.push_back(token);
                 child_ids_vec.push_back(child);
@@ -196,8 +197,43 @@ bool build_csr_from_fresh_data(const std::vector<sids<N>>& fresh_data,
 }
 
 // ---------------------------------------------------------------------------
+// radix_sort_sids<N>
+// LSD byte-level radix sort，O(M) 替代 std::sort 的 O(M log M)。
+// 要求 sids<N> 为 trivially copyable 且 token ID 非负。
+// ---------------------------------------------------------------------------
+template<int N>
+void radix_sort_sids(std::vector<sids<N>>& data) {
+    static_assert(sizeof(sids<N>) == N * sizeof(int), "sids<N> padding detected");
+    if (data.empty()) return;
+    const size_t n = data.size();
+    const size_t num_bytes = sizeof(sids<N>);
+    std::vector<sids<N>> temp(n);
+    std::vector<int> count(256);
+
+    for (size_t byte_idx = 0; byte_idx < num_bytes; ++byte_idx) {
+        std::fill(count.begin(), count.end(), 0);
+        for (size_t i = 0; i < n; ++i) {
+            uint8_t b = reinterpret_cast<const uint8_t*>(&data[i])[byte_idx];
+            count[b]++;
+        }
+        int total = 0;
+        for (int i = 0; i < 256; ++i) {
+            int old = count[i];
+            count[i] = total;
+            total += old;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            uint8_t b = reinterpret_cast<const uint8_t*>(&data[i])[byte_idx];
+            temp[count[b]++] = data[i];
+        }
+        data.swap(temp);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // split_strings<N>
 // 将 "t0_t1_t2" 格式的字符串解析为 sids<N>。
+// 原地解析：避免 substr + std::stoi 的临时 string 分配和异常检查开销。
 // ---------------------------------------------------------------------------
 template<int N>
 std::vector<sids<N>> split_strings(const std::vector<std::string>& ele_rq_ids) {
@@ -211,12 +247,12 @@ std::vector<sids<N>> split_strings(const std::vector<std::string>& ele_rq_ids) {
 
         while (count < N) {
             size_t end = str.find('_', start);
-            std::string token = (end == std::string::npos)
-                                    ? str.substr(start)
-                                    : str.substr(start, end - start);
-            if (!token.empty() && count < N) {
-                sid.rq_id[count] = std::stoi(token);
+            size_t parse_end = (end == std::string::npos) ? str.size() : end;
+            int val = 0;
+            for (size_t i = start; i < parse_end; ++i) {
+                val = val * 10 + (str[i] - '0');
             }
+            sid.rq_id[count] = val;
             ++count;
             if (end == std::string::npos) break;
             start = end + 1;
