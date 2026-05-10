@@ -14,7 +14,8 @@ public:
     static std::vector<BaseLogitsProcessorPtr> createLogitsProcessors(rtp_llm::DeviceBase*           device,
                                                                       std::shared_ptr<GenerateInput> generate_input,
                                                                       int32_t                        init_batch_size,
-                                                                      int64_t                        eos_token_id);
+                                                                      int64_t                        eos_token_id,
+                                                                      int32_t                        vocab_size);
 };
 
 }  // namespace rtp_llm
