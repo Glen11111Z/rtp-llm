@@ -92,6 +92,7 @@ std::shared_ptr<GenerateConfig> QueryConverter::transGenerateConfig(const Genera
     for (const auto& rq_id : config_proto->ele_rq_ids()) {
         generate_config->ele_rq_ids.push_back(rq_id);
     }
+    generate_config->ele_rq_id_offset = config_proto->ele_rq_id_offset();
 
     return generate_config;
 }

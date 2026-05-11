@@ -80,6 +80,7 @@ public:
     std::vector<int>         end_think_token_ids;
     bool                     gen_timeline = false;
     std::vector<std::string> ele_rq_ids;
+    int                      ele_rq_id_offset = 0;   // <shop_0_0> 对应的 token id，作为 rq_id 的偏移量
     int                      profile_step        = 3;
     bool                     ignore_eos          = false;
     bool                     reuse_cache         = true;
@@ -221,6 +222,7 @@ public:
         JSONIZE(enable_remote_cache);
         JSONIZE(aux_info);
         JSONIZE(ele_rq_ids);
+        JSONIZE(ele_rq_id_offset);
 #undef JSONIZE
 #undef JSONIZE_OPTIONAL
     }

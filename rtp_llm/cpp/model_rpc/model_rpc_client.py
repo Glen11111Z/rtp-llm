@@ -148,6 +148,7 @@ def trans_input(input_py: GenerateInput):
 
     if input_py.generate_config.ele_rq_ids:
         generate_config_pb.ele_rq_ids.extend(input_py.generate_config.ele_rq_ids)
+    generate_config_pb.ele_rq_id_offset = input_py.generate_config.ele_rq_id_offset
 
     for i in range(len(input_py.generate_config.stop_words_list)):
         stop_words = generate_config_pb.stop_words_list.rows.add()

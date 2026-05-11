@@ -144,6 +144,7 @@ class GenerateConfig(BaseModel):
     enable_remote_cache: bool = True
 
     ele_rq_ids: List[str] = []
+    ele_rq_id_offset: int = 0
 
     def gen_hash_value(self):
         cp = copy.copy(self)

@@ -14,12 +14,14 @@
 #include "rtp_llm/cpp/kernels/csr_logits.h"
 #include "rtp_llm/cpp/core/BufferHelper.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
+#include "rtp_llm/cpp/utils/Logger.h"
 
 #if USING_CUDA
 #include "rtp_llm/cpp/devices/cuda_impl/CudaDevice.h"
 #endif
 
 #include <algorithm>
+#include <sstream>
 #include <vector>
 #include <future>
 
@@ -35,9 +37,14 @@ namespace rtp_llm {
 //   4. 调用 maskLogits：把 mask=1 的位置置为 -inf
 // =============================================================================
 void TreeLogitsProcessorCSR::process(const SamplerInputs& inputs, size_t start_idx, size_t finish_idx) {
+    int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    std::cout << "in TreeLogitsProcessorCSR::process, start_time_us :" << start_time_us << std::endl;
     ensureInitialized();
+    int64_t end_check_initialized_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    std::cout << "in TreeLogitsProcessorCSR::process, end_check_initialized_time_us :" << end_check_initialized_time_us << std::endl;
     const size_t batch_size = size();
     RTP_LLM_CHECK(batch_size == finish_idx - start_idx);
+    // std::cout<<"In TreeLogitsProcessorCSRGpu::process batch_size is: "<<batch_size<<std::endl;
 
     // 检查是否有任何 beam 开启了限制性解码
     bool any_in_tree_mode = false;
@@ -89,6 +96,8 @@ void TreeLogitsProcessorCSR::process(const SamplerInputs& inputs, size_t start_i
 #endif
 
     maskLogits(batch_logits, d_mask_out);
+    int64_t end_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    std::cout << "in TreeLogitsProcessorCSR::process, end_time_us :" << end_time_us << std::endl;
 }
 
 // =============================================================================
@@ -110,7 +119,7 @@ void TreeLogitsProcessorCSR::updateStatus(const rtp_llm::BufferPtr& new_tokens, 
 
     const int max_col    = static_cast<int>(new_tokens->shape()[1]);
     const int batch_size = static_cast<int>(size());
-    
+
     const StreamTreeInfo* ref_info = nullptr;
     for (int i = 0; i < batch_size; ++i) {
         if (tree_infos_[i].in_tree_mode) {
@@ -144,7 +153,35 @@ void TreeLogitsProcessorCSR::updateStatus(const rtp_llm::BufferPtr& new_tokens, 
             const auto& info   = tree_infos_[i];
             col_offsets_cpu[i] = info.is_beam_search ? (info.input_length + info.current_output_length + j) : j;
         }
-        
+
+        // {
+        //     std::stringstream sstr;
+        //     sstr << "col_offsets_cpu [";
+        //     for (int i = 0; i < batch_size; ++i) {
+        //         sstr <<" "<<col_offsets_cpu[i];
+        //     }
+        //     sstr << "]";
+        //     RTP_LLM_LOG_INFO("%s", sstr.str().c_str());
+        // }
+
+        // 输出 new_tokens 矩阵内容到日志
+        // {
+        // auto new_tokens_cpu = buffer2vector<int32_t>(*device_->clone({*new_tokens, AllocationType::HOST}));
+        // std::stringstream ss;
+        // ss << "new_tokens [" << batch_size << " x " << max_col << "]: [";
+        // for (int i = 0; i < batch_size; ++i) {
+        //     if (i > 0) ss << ", ";
+        //     ss << "[";
+        //     // for (int c = 0; c < max_col; ++c) if (c==){
+        //     //     if (c > 0) ss << ", ";
+        //     ss << new_tokens_cpu[i * max_col + col_offsets_cpu[i]];
+        //     //}
+        //     ss << "]";
+        // }
+        // ss << "]";
+        // RTP_LLM_LOG_INFO("%s", ss.str().c_str());
+        // }
+
         // 复用持久化 d_col_offsets_，直接覆盖写（无需重新分配）
         {
             auto cpu_buf = vector2Buffer(col_offsets_cpu);
@@ -173,6 +210,29 @@ void TreeLogitsProcessorCSR::updateStatus(const rtp_llm::BufferPtr& new_tokens, 
                                             batch_size,
                                             max_col,
                                             stream);
+        // {
+        //     auto ori_cpu = buffer2vector<int32_t>(*device_->clone({*d_states_batch_, AllocationType::HOST}));
+        //     std::stringstream ss;
+        //     ss << "d_states_batch_ before CsrUpdateStates (step j=" << j << "): [";
+        //     for (int i = 0; i < batch_size; ++i) {
+        //         if (i > 0) ss << ", ";
+        //         ss << ori_cpu[i];
+        //     }
+        //     ss << "]";
+        //     RTP_LLM_LOG_INFO("%s", ss.str().c_str());
+        // }
+
+        // {
+        //     auto ori_data = buffer2vector<int32_t>(*device_->clone({*d_sampled_tokens_, AllocationType::HOST}));
+        //     std::stringstream ss2;
+        //     ss2 << "d_sampled_tokens_ before CsrUpdateStates (step j=" << j << "): [";
+        //     for (int i = 0; i < batch_size; ++i) {
+        //         if (i > 0) ss2 << ", ";
+        //         ss2 << ori_data[i];
+        //     }
+        //     ss2 << "]";
+        //     RTP_LLM_LOG_INFO("%s", ss2.str().c_str());
+        // }
 
         // --- 3. GPU 上原地更新 d_states_batch_ ---
         invokeCsrUpdateStates<cudaStream_t>(ref_info->d_indptr->data<int32_t>(),
@@ -191,7 +251,19 @@ void TreeLogitsProcessorCSR::updateStatus(const rtp_llm::BufferPtr& new_tokens, 
         // 这次 D2H 是必须的：CPU 侧 current_output_length 需要维护，
         // updateMultiSeqStatus() 也依赖 CPU 侧 current_state 进行重排。
         auto updated_cpu = buffer2vector<int32_t>(*device_->clone({*d_states_batch_, AllocationType::HOST}));
-        
+
+        // // 日志输出 d_states_batch_ 更新后的状态
+        // {
+        //     std::stringstream ss;
+        //     ss << "d_states_batch_ after CsrUpdateStates (step j=" << j << "): [";
+        //     for (int i = 0; i < batch_size; ++i) {
+        //         if (i > 0) ss << ", ";
+        //         ss << updated_cpu[i];
+        //     }
+        //     ss << "]";
+        //     RTP_LLM_LOG_INFO("%s", ss.str().c_str());
+        // }
+
         for (int i = 0; i < batch_size; ++i) {
             if (!tree_infos_[i].in_tree_mode) {
                 continue;
@@ -337,16 +409,25 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
     processor_ptr->pending_input_length_ = generate_input->inputLength();
 
     // 捕获所需数据（按值拷贝，避免引用 generate_input 生命周期）
-    auto    ele_rq_ids_copy = generate_input->generate_config->ele_rq_ids;
-    int32_t vocab_size_copy = vocab_size;
+    auto    ele_rq_ids_copy   = generate_input->generate_config->ele_rq_ids;
+    int32_t vocab_size_copy   = vocab_size;
+    int32_t rq_id_offset_copy = generate_input->generate_config->ele_rq_id_offset;
 
     // WARNING: std::launch::async 会为每个请求新建一个 OS 线程。
     // 当前场景为少量大请求（单机 <= 40 QPS），线程开销可接受。
     // 若后续扩展到高 QPS 小请求场景，请改用线程池（如 autil::LockFreeThreadPool）。
     processor_ptr->async_cpu_init_future_ = std::async(
         std::launch::async,
-        [ele_rq_ids_copy, vocab_size_copy]() -> std::shared_ptr<CSRIndex<token_num>> {
+        [ele_rq_ids_copy, vocab_size_copy, rq_id_offset_copy]() -> std::shared_ptr<CSRIndex<token_num>> {
             auto origin_rq_ids = split_strings<token_num>(ele_rq_ids_copy);
+            // 将所有 token id 加上偏移量（<shop_0_0> 对应的 token id）
+            if (rq_id_offset_copy != 0) {
+                for (auto& sid : origin_rq_ids) {
+                    for (int i = 0; i < token_num; ++i) {
+                        sid.rq_id[i] += rq_id_offset_copy;
+                    }
+                }
+            }
             std::sort(origin_rq_ids.begin(), origin_rq_ids.end());
             auto csr_index = std::make_shared<CSRIndex<token_num>>();
             bool success   = build_csr_from_fresh_data<token_num>(origin_rq_ids, *csr_index, vocab_size_copy);
