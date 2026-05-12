@@ -163,7 +163,15 @@ void InferenceService::inferResponse(int64_t                                    
     autil::StageTime iterate_stage_timer;
     auto             start_time_ms = autil::TimeUtility::currentTimeInMilliSeconds();
     const auto       body          = request.GetBody();
+    auto             t_json_start  = autil::TimeUtility::currentTimeInMicroSeconds();
     auto             req           = InferenceParsedRequest::extractRequest(body, model_config_, token_processor_);
+    auto             t_json_end    = autil::TimeUtility::currentTimeInMicroSeconds();
+    RTP_LLM_LOG_INFO("csr_timing[stage=json_parse] body_size=%zu, parse_us=%ld, ele_rq_ids_size=%zu, ele_rq_ids_pb_size=%zu, ele_rq_ids_pb16_size=%zu",
+                     body.size(),
+                     t_json_end - t_json_start,
+                     req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids.size() : 0,
+                     req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids_pb.size() : 0,
+                     req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids_pb16.size() : 0);
     if (metric_reporter_) {
         metric_reporter_->reportQpsMetric(req.source);
     }

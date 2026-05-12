@@ -24,6 +24,7 @@
 #include <future>
 
 #include "autil/LockFreeThreadPool.h"
+#include "autil/TimeUtility.h"
 
 namespace rtp_llm {
 
@@ -266,10 +267,12 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     }
 
     // --- 等待后台 CPU 构建完成 ---
+    auto t_wait_start = autil::TimeUtility::currentTimeInMicroSeconds();
     std::shared_ptr<CSRIndex<token_num>> csr_index;
     if (async_cpu_init_future_.valid()) {
         csr_index = async_cpu_init_future_.get();
     }
+    auto t_wait_end = autil::TimeUtility::currentTimeInMicroSeconds();
 
     if (!csr_index) {
         // 构建失败：保持 tree_infos_ 为空，后续调用直接无操作返回
@@ -278,6 +281,7 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     }
 
     // --- H2D 拷贝（在主线程执行，确保 GPU context 正确）---
+    auto t_h2d_start = autil::TimeUtility::currentTimeInMicroSeconds();
     rtp_llm::BufferPtr d_indptr;
     {
         auto cpu_buf = vector2Buffer(csr_index->indptr);
@@ -328,6 +332,15 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     auto                 cpu_states_buf = vector2Buffer(init_states);
     d_states_batch_                     = device_->clone({*cpu_states_buf, AllocationType::DEVICE});
 
+    auto t_h2d_end = autil::TimeUtility::currentTimeInMicroSeconds();
+
+    RTP_LLM_LOG_INFO("csr_timing[stage=ensure_init] call_abs_us=%ld, wait_cpu_build_us=%ld, h2d_us=%ld, total_us=%ld, ele_rq_ids_size=%zu",
+                     t_wait_start,
+                     t_wait_end - t_wait_start,
+                     t_h2d_end - t_h2d_start,
+                     t_h2d_end - t_wait_start,
+                     csr_index->packed_csr_tokens.size());
+
     async_initialized_ = true;
 }
 
@@ -340,7 +353,9 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
 // =============================================================================
 std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInput(
     rtp_llm::DeviceBase* device, std::shared_ptr<GenerateInput> generate_input, int32_t num, int32_t vocab_size) {
-    if (generate_input->generate_config->ele_rq_ids.empty()) {
+    if (generate_input->generate_config->ele_rq_ids.empty()
+        && generate_input->generate_config->ele_rq_ids_pb.empty()
+        && generate_input->generate_config->ele_rq_ids_pb16.empty()) {
         return nullptr;
     }
 
@@ -355,14 +370,46 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
     // 使用全局共享线程池执行后台 CPU 构建，避免每个请求新建 OS 线程。
     // lambda 按值捕获 generate_input shared_ptr，保证 ele_rq_ids 字符串数据生命周期安全，
     // 同时避免 std::vector<std::string> 的深拷贝开销。
+    auto t_submit = autil::TimeUtility::currentTimeInMicroSeconds();
     auto pool = getCsrInitThreadPool();
     processor_ptr->async_cpu_init_future_ = pool->async(
-        [generate_input, vocab_size]() -> std::shared_ptr<CSRIndex<token_num>> {
-            const auto& ele_rq_ids = generate_input->generate_config->ele_rq_ids;
-            auto origin_rq_ids = split_strings<token_num>(ele_rq_ids);
+        [generate_input, vocab_size, t_submit]() -> std::shared_ptr<CSRIndex<token_num>> {
+            auto t0 = autil::TimeUtility::currentTimeInMicroSeconds();
+
+            // 选择解码路径：
+            //   pb16: 3×uint16 flat，体积最小（6 bytes/组），直接数组读取
+            //   pb:   1×uint64 packed，紧凑编码（8 bytes/组），位运算拆包
+            //   默认: split_strings 逐字符解析
+            const auto& pb   = generate_input->generate_config->ele_rq_ids_pb;
+            const auto& pb16 = generate_input->generate_config->ele_rq_ids_pb16;
+            // 0=split_strings, 1=packed int64, 2=flat uint16
+            const int encode_mode = !pb16.empty() ? 2 : (!pb.empty() ? 1 : 0);
+
+            std::vector<sids<token_num>> origin_rq_ids;
+            if (encode_mode == 2) {
+                origin_rq_ids = decodeFlatUint16EleRqIds<token_num>(pb16);
+            } else if (encode_mode == 1) {
+                origin_rq_ids = decodePackedEleRqIds<token_num>(pb);
+            } else {
+                origin_rq_ids = split_strings<token_num>(generate_input->generate_config->ele_rq_ids);
+            }
+            auto t2 = autil::TimeUtility::currentTimeInMicroSeconds();
+
             std::sort(origin_rq_ids.begin(), origin_rq_ids.end());
             auto csr_index = std::make_shared<CSRIndex<token_num>>();
             bool success   = build_csr_from_fresh_data<token_num>(origin_rq_ids, *csr_index, vocab_size);
+            auto t3 = autil::TimeUtility::currentTimeInMicroSeconds();
+
+            const size_t ids_count = origin_rq_ids.size();
+            RTP_LLM_LOG_INFO("csr_timing[stage=cpu_build] submit_abs_us=%ld, start_abs_us=%ld, end_abs_us=%ld, "
+                             "queue_us=%ld, ele_rq_ids_size=%zu, decode_us=%ld, sort_build_us=%ld, total_us=%ld, encode=%d",
+                             t_submit, t0, t3,
+                             t0 - t_submit,
+                             ids_count,
+                             t2 - t0,
+                             t3 - t2,
+                             t3 - t0,
+                             encode_mode);
             if (!success) {
                 return nullptr;
             }
