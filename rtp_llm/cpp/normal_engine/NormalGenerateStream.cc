@@ -1,5 +1,7 @@
 #include "rtp_llm/cpp/normal_engine/NormalGenerateStream.h"
 #include "rtp_llm/cpp/core/torch_utils/BufferTorchUtils.h"
+#include <cmath>
+#include <cfloat>
 
 namespace rtp_llm {
 
@@ -32,6 +34,11 @@ GenerateOutputs NormalGenerateStream::prepareGenerateOutput(const StreamUpdateIn
     generate_results.request_id = request_id_;
 
     for (int i = 0; i < nextBatchSize(); i++) {
+        // Filter out beams with -inf cum_log_probs (invalid beam search results)
+        if (cum_log_probs_ && (*(cum_log_probs_->dataWithOffset<float>(i))<=-FLT_MAX)) {
+            continue;
+        }
+
         GenerateOutput generate_output;
         generate_output.aux_info.iter_count = iter_count_;
         generate_output.output_ids          = SAFE_CACHED_HOST_BUF(TYPE_INT32, {1lu, output_len});
