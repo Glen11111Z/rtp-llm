@@ -144,6 +144,8 @@ class GenerateConfig(BaseModel):
     enable_remote_cache: bool = True
 
     ele_rq_ids: List[str] = []
+    ele_rq_ids_pb: str = ""  # base64 encoded packed uint64 binary
+    ele_rq_ids_pb16: str = ""  # base64 encoded flat uint16 binary (3×uint16 per triple)
 
     def gen_hash_value(self):
         cp = copy.copy(self)
