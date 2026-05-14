@@ -33,11 +33,10 @@ GenerateOutputs NormalGenerateStream::prepareGenerateOutput(const StreamUpdateIn
     GenerateOutputs generate_results;
     generate_results.request_id = request_id_;
 
-    for (int i = 0; i < nextBatchSize(); i++) {
-        // Filter out beams with -inf cum_log_probs (invalid beam search results)
-        if (cum_log_probs_ && (*(cum_log_probs_->dataWithOffset<float>(i))<=-FLT_MAX)) {
-            continue;
-        }
+    // When constrained decoding has reduced the beam_size, only output
+    // effective_beam_size results instead of the full nextBatchSize().
+    int output_batch_size = hasReducedBeamSize() ? effectiveBeamSize() : nextBatchSize();
+    for (int i = 0; i < output_batch_size; i++) {
 
         GenerateOutput generate_output;
         generate_output.aux_info.iter_count = iter_count_;

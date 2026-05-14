@@ -468,8 +468,12 @@ void NormalBatchStreamProcessor::setCommonSamplerInputs(SamplerInputs&          
         for (int i = 0; i < sampler_batch_size; ++i) {
             input_lengths[batch_idx]      = stream->inputLength();
             sequence_lengths[batch_idx]   = stream->seqLength() + propose_step;
-            num_beams_in[batch_idx]       = stream->currentNumBeams();
-            num_beams_out[batch_idx]      = stream->nextNumBeams();
+            // Use effective beam size for constrained decoding:
+            // If beam_size has been dynamically reduced, use the reduced value.
+            num_beams_in[batch_idx]       = stream->hasReducedBeamSize()
+                                                ? (uint64_t)stream->effectiveBeamSize()
+                                                : (uint64_t)stream->currentNumBeams();
+            num_beams_out[batch_idx]      = (uint64_t)stream->nextNumBeams();
             top_k[batch_idx]              = stream->generateConfig()->top_k;
             top_p[batch_idx]              = stream->generateConfig()->top_p;
             temperature[batch_idx]        = stream->generateConfig()->temperature;
@@ -657,6 +661,31 @@ void NormalBatchStreamProcessor::dispatchSingleStream(GenerateStreamPtr   stream
 
     RTP_LLM_LOG_DEBUG(
         "stream [%ld], new_tokens = [%s]", stream->streamId(), new_tokens->debugStringWithData<int32_t>().c_str());
+
+    // Propagate effective_beam_sizes from sampler output back to the stream
+    // so that subsequent iterations and final output use the reduced beam_size.
+    // When beam_size is reduced, truncate dispatch buffers to the effective size
+    // so that updateKvCacheBlocks sees a matching src_batch_indices size and
+    // automatically frees KV cache blocks for the discarded beams.
+    if (!sampler_output.effective_beam_sizes.empty()) {
+        auto it = sampler_output.effective_beam_sizes.find((size_t)batch_idx_out);
+        if (it != sampler_output.effective_beam_sizes.end()) {
+            int effective_size = it->second;
+            stream->setEffectiveBeamSize(effective_size);
+
+            // After setEffectiveBeamSize, currentBatchSize()/nextBatchSize() return
+            // the reduced value. Truncate buffers passed to update() so that
+            // CompleteTokenIds and updateKvCacheBlocks operate on the reduced batch.
+            if (has_beam_search && effective_size < (int)next_batch_size) {
+                batch_new_all_token_ids = new_all_token_ids->slice(batch_idx_out, effective_size);
+                src_batch_indices       = sampler_output.beam_index->slice(batch_idx_out, effective_size);
+                new_tokens              = new_tokens_all->slice(batch_idx_out, effective_size);
+                if (batch_cum_log_probs) {
+                    batch_cum_log_probs = sampler_output.cum_log_probs->slice(batch_idx_out, effective_size);
+                }
+            }
+        }
+    }
 
     stream->update({has_beam_search ? batch_new_all_token_ids : new_tokens,
                     1,

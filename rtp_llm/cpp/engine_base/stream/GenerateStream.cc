@@ -192,7 +192,14 @@ rtp_llm::SpecialTokens GenerateStream::specialTokens() const {
 
 int GenerateStream::batchSize(int output_len) const {
     if (generate_input_->generate_config->hasNumBeams()) {
-        return numBeams(output_len);
+        int beams = numBeams(output_len);
+        // When constrained decoding has reduced the beam_size,
+        // cap batchSize to effective_beam_size_ so that downstream
+        // components (KV cache update, token dispatch, etc.) use the reduced value.
+        if (effective_beam_size_ > 0 && beams > effective_beam_size_) {
+            return effective_beam_size_;
+        }
+        return beams;
     } else {
         return output_len == 0 && !perf_test_ ? 1 : std::max(numReturnSequences(), 1);
     }
@@ -203,7 +210,13 @@ int GenerateStream::currentBatchSize() const {
 }
 
 int GenerateStream::nextBatchSize() const {
-    return batchSize(outputTokenLen() + 1);
+    int output_len = outputTokenLen()+1;
+    if (generate_input_->generate_config->hasNumBeams()) {
+        int beams = numBeams(output_len);
+        return beams;
+    } else {
+        return output_len == 0 && !perf_test_ ? 1 : std::max(numReturnSequences(), 1);
+    }
 }
 
 int GenerateStream::maxBatchSize() const {
@@ -243,6 +256,30 @@ int GenerateStream::maxNumBeams() const {
 
 bool GenerateStream::hasNumBeams() const {
     return generate_input_->generate_config->hasNumBeams();
+}
+
+void GenerateStream::setEffectiveBeamSize(int effective_beam_size) {
+    // Compare against maxNumBeams() (from config) instead of currentNumBeams()
+    // because currentNumBeams() depends on outputTokenLen(), which may be 0
+    // during context-to-decode transition, causing numBeams(0) to return 1
+    // and making this condition never satisfied.
+    int configured_beams = maxNumBeams();
+    if (effective_beam_size > 0 && effective_beam_size < configured_beams) {
+        effective_beam_size_ = effective_beam_size;
+        RTP_LLM_LOG_DEBUG("stream [%ld] dynamic beam_size reduced from %d to %d",
+                          streamId(), configured_beams, effective_beam_size);
+    }
+}
+
+int GenerateStream::effectiveBeamSize() const {
+    if (effective_beam_size_ > 0) {
+        return effective_beam_size_;
+    }
+    return maxNumBeams();
+}
+
+bool GenerateStream::hasReducedBeamSize() const {
+    return effective_beam_size_ > 0 && effective_beam_size_ < maxNumBeams();
 }
 
 bool GenerateStream::needTilingForSampling() const {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_map>
 #include "rtp_llm/cpp/core/Buffer.h"
 #include "rtp_llm/cpp/core/Types.h"
 #include "rtp_llm/cpp/devices/DeviceBase.h"
@@ -68,6 +69,10 @@ public:
     rtp_llm::BufferPtr all_probs;
     rtp_llm::BufferPtr beam_index;
     rtp_llm::BufferPtr success;
+
+    // Per-stream effective beam sizes after constrained decoding adjustment.
+    // Maps stream batch offset -> effective beam size. Empty if no adjustment needed.
+    std::unordered_map<size_t, int> effective_beam_sizes;
 };
 
 struct MergedOutput {
