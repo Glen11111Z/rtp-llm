@@ -672,7 +672,7 @@ void NormalBatchStreamProcessor::dispatchSingleStream(GenerateStreamPtr   stream
         if (it != sampler_output.effective_beam_sizes.end()) {
             int effective_size = it->second;
             stream->setEffectiveBeamSize(effective_size);
-
+            
             // After setEffectiveBeamSize, currentBatchSize()/nextBatchSize() return
             // the reduced value. Truncate buffers passed to update() so that
             // CompleteTokenIds and updateKvCacheBlocks operate on the reduced batch.

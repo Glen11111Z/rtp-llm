@@ -264,7 +264,7 @@ void GenerateStream::setEffectiveBeamSize(int effective_beam_size) {
     // during context-to-decode transition, causing numBeams(0) to return 1
     // and making this condition never satisfied.
     int configured_beams = maxNumBeams();
-    if (effective_beam_size > 0 && effective_beam_size < configured_beams) {
+    if (effective_beam_size > 0 && effective_beam_size <= configured_beams) {
         effective_beam_size_ = effective_beam_size;
         RTP_LLM_LOG_DEBUG("stream [%ld] dynamic beam_size reduced from %d to %d",
                           streamId(), configured_beams, effective_beam_size);
@@ -939,7 +939,7 @@ void GenerateStream::updateLogitProcessorMultiSeqStatus(const rtp_llm::BufferPtr
     if (src_batch_indices == nullptr) {
         return;
     }
-
+    
     auto src_batch_indices_vec = rtp_llm::buffer2vector<int>(*src_batch_indices);
     RTP_LLM_CHECK(src_batch_indices_vec.size() == currentBatchSize());
 
