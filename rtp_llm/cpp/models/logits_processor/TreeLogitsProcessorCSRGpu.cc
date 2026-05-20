@@ -354,8 +354,8 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
 std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInput(
     rtp_llm::DeviceBase* device, std::shared_ptr<GenerateInput> generate_input, int32_t num, int32_t vocab_size) {
     if (generate_input->generate_config->ele_rq_ids.empty()
-        && generate_input->generate_config->extra_info.empty()
-        && generate_input->generate_config->ele_rq_ids_pb16.empty()) {
+        && generate_input->generate_config->ele_rq_ids_pb.empty()
+        && generate_input->generate_config->extra_info.empty()) {
         return nullptr;
     }
 
@@ -377,11 +377,11 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
             auto t0 = autil::TimeUtility::currentTimeInMicroSeconds();
 
             // 选择解码路径：
-            //   pb16:       3×uint16 flat，体积最小（6 bytes/组），直接数组读取
-            //   extra_info: 1×uint64 packed，紧凑编码（8 bytes/组），位运算拆包
+            //   extra_info: 3×uint16 flat，体积最小（6 bytes/组），直接数组读取 (原 ele_rq_ids_pb16)
+            //   pb:         1×uint64 packed，紧凑编码（8 bytes/组），位运算拆包
             //   默认:      split_strings 逐字符解析
-            const auto& pb   = generate_input->generate_config->extra_info;
-            const auto& pb16 = generate_input->generate_config->ele_rq_ids_pb16;
+            const auto& pb   = generate_input->generate_config->ele_rq_ids_pb;
+            const auto& pb16 = generate_input->generate_config->extra_info;
             // 0=split_strings, 1=packed int64, 2=flat uint16
             const int encode_mode = !pb16.empty() ? 2 : (!pb.empty() ? 1 : 0);
 

@@ -24,11 +24,11 @@ LogitsProcessorFactory::createLogitsProcessors(rtp_llm::DeviceBase*           de
         result.push_back(std::static_pointer_cast<BaseLogitsProcessor>(think_processor));
     }
 
-    // 基于 CSR 前缀树的限制性解码：ele_rq_ids 或 extra_info 非空时启用。
+    // 基于 CSR 前缀树的限制性解码：ele_rq_ids 或 ele_rq_ids_pb 非空时启用。
     // 否则回退到原有基于 DFA 状态机的 TreeLogitsProcessor。
     if (!generate_input->generate_config->ele_rq_ids.empty()
-        || !generate_input->generate_config->extra_info.empty()
-        || !generate_input->generate_config->ele_rq_ids_pb16.empty()) {
+        || !generate_input->generate_config->ele_rq_ids_pb.empty()
+        || !generate_input->generate_config->extra_info.empty()) {
         auto csr_processor = TreeLogitsProcessorCSR::fromGenerateInput(
             device, generate_input, init_batch_size, vocab_size);
         if (csr_processor != nullptr) {

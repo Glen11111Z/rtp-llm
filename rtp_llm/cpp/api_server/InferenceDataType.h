@@ -78,14 +78,14 @@ public:
             ele_rq_ids = std::move(ele_rq_ids_);
         } catch (autil::legacy::ExceptionBase& e) {}
         try {
+            std::string ele_rq_ids_pb_;
+            json.Jsonize("ele_rq_ids_pb", ele_rq_ids_pb_);
+            ele_rq_ids_pb = std::move(ele_rq_ids_pb_);
+        } catch (autil::legacy::ExceptionBase& e) {}
+        try {
             std::string extra_info_;
             json.Jsonize("extra_info", extra_info_);
             extra_info = std::move(extra_info_);
-        } catch (autil::legacy::ExceptionBase& e) {}
-        try {
-            std::string ele_rq_ids_pb16_;
-            json.Jsonize("ele_rq_ids_pb16", ele_rq_ids_pb16_);
-            ele_rq_ids_pb16 = std::move(ele_rq_ids_pb16_);
         } catch (autil::legacy::ExceptionBase& e) {}
     }
     std::string                                          source;
@@ -99,8 +99,8 @@ public:
 
     // top-level ele_rq_ids 相关字段（generate_config 外层）
     std::vector<std::string> ele_rq_ids;
+    std::string              ele_rq_ids_pb;
     std::string              extra_info;
-    std::string              ele_rq_ids_pb16;
 };
 
 class AuxInfoAdapter: public Jsonizable, public AuxInfo {
