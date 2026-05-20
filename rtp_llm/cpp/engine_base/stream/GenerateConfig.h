@@ -80,7 +80,7 @@ public:
     std::vector<int>         end_think_token_ids;
     bool                     gen_timeline = false;
     std::vector<std::string> ele_rq_ids;
-    std::string              ele_rq_ids_pb;    // base64 encoded packed uint64 binary (3 tokens → 1×uint64)
+    std::string              extra_info;       // base64 encoded packed uint64 binary (formerly ele_rq_ids_pb)
     std::string              ele_rq_ids_pb16;  // base64 encoded flat uint16 binary (3 tokens → 3×uint16)
     int                      profile_step        = 3;
     bool                     ignore_eos          = false;
@@ -223,7 +223,7 @@ public:
         JSONIZE(enable_remote_cache);
         JSONIZE(aux_info);
         JSONIZE(ele_rq_ids);
-        JSONIZE(ele_rq_ids_pb);
+        JSONIZE(extra_info);
         JSONIZE(ele_rq_ids_pb16);
 #undef JSONIZE
 #undef JSONIZE_OPTIONAL

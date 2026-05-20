@@ -310,7 +310,7 @@ std::vector<sids<N>> parseJsonArray(const std::string& filename) {
 //   [uint32_t count]            — packed ID 个数
 //   [uint64_t packed_ids[count]] — 每个 packed_id = (t0 << 36) | (t1 << 18) | t2
 //
-// base64 编码后嵌入 JSON 的 ele_rq_ids_pb 字段，替代 50000 个字符串的 JSON 数组，
+// base64 编码后嵌入 JSON 的 extra_info 字段，替代 50000 个字符串的 JSON 数组，
 // 将 JSON 解析耗时从 ~25ms 降至 ~5ms（1 个字符串分配 vs 50000 个）。
 // ---------------------------------------------------------------------------
 template<int N>

@@ -70,6 +70,23 @@ public:
         }
 
         JSONIZE_OPTIONAL(generate_config);
+
+        // 解析 generate_config 之外的 ele_rq_ids 相关字段（优先级低于 generate_config 内部字段）
+        try {
+            std::vector<std::string> ele_rq_ids_;
+            json.Jsonize("ele_rq_ids", ele_rq_ids_);
+            ele_rq_ids = std::move(ele_rq_ids_);
+        } catch (autil::legacy::ExceptionBase& e) {}
+        try {
+            std::string extra_info_;
+            json.Jsonize("extra_info", extra_info_);
+            extra_info = std::move(extra_info_);
+        } catch (autil::legacy::ExceptionBase& e) {}
+        try {
+            std::string ele_rq_ids_pb16_;
+            json.Jsonize("ele_rq_ids_pb16", ele_rq_ids_pb16_);
+            ele_rq_ids_pb16 = std::move(ele_rq_ids_pb16_);
+        } catch (autil::legacy::ExceptionBase& e) {}
     }
     std::string                                          source;
     std::optional<bool>                                  private_request;
@@ -79,6 +96,11 @@ public:
     std::optional<std::vector<std::vector<std::string>>> images_batch;
     std::optional<std::vector<std::string>>              images;
     std::optional<GenerateConfig>                        generate_config;
+
+    // top-level ele_rq_ids 相关字段（generate_config 外层）
+    std::vector<std::string> ele_rq_ids;
+    std::string              extra_info;
+    std::string              ele_rq_ids_pb16;
 };
 
 class AuxInfoAdapter: public Jsonizable, public AuxInfo {

@@ -97,7 +97,7 @@ message GenerateConfigPB {
     bool enable_remote_cache = 53;
     string unique_key = 54;
     repeated string ele_rq_ids = 55;
-    string ele_rq_ids_pb = 56;  // base64 encoded packed uint64 binary
+    string extra_info = 56;  // base64 encoded packed uint64 binary (formerly ele_rq_ids_pb)
     string ele_rq_ids_pb16 = 57;  // base64 encoded flat uint16 binary (3×uint16 per triple)
 }
 

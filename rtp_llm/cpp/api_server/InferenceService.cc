@@ -83,6 +83,18 @@ void InferenceParsedRequest::extractRequestGenerateConfigs(RawRequest&          
         } else {
             pr.generate_configs.push_back(std::make_shared<GenerateConfig>());
         }
+
+        // 将 generate_config 外层的 ele_rq_ids 相关字段 merge 进 generate_config（仅当 generate_config 内部字段为空时）
+        auto& gc = pr.generate_configs[i];
+        if (gc->ele_rq_ids.empty() && !req.ele_rq_ids.empty()) {
+            gc->ele_rq_ids = req.ele_rq_ids;
+        }
+        if (gc->extra_info.empty() && !req.extra_info.empty()) {
+            gc->extra_info = req.extra_info;
+        }
+        if (gc->ele_rq_ids_pb16.empty() && !req.ele_rq_ids_pb16.empty()) {
+            gc->ele_rq_ids_pb16 = req.ele_rq_ids_pb16;
+        }
     }
 }
 
@@ -166,11 +178,11 @@ void InferenceService::inferResponse(int64_t                                    
     auto             t_json_start  = autil::TimeUtility::currentTimeInMicroSeconds();
     auto             req           = InferenceParsedRequest::extractRequest(body, model_config_, token_processor_);
     auto             t_json_end    = autil::TimeUtility::currentTimeInMicroSeconds();
-    RTP_LLM_LOG_INFO("csr_timing[stage=json_parse] body_size=%zu, parse_us=%ld, ele_rq_ids_size=%zu, ele_rq_ids_pb_size=%zu, ele_rq_ids_pb16_size=%zu",
+    RTP_LLM_LOG_INFO("csr_timing[stage=json_parse] body_size=%zu, parse_us=%ld, ele_rq_ids_size=%zu, extra_info_size=%zu, ele_rq_ids_pb16_size=%zu",
                      body.size(),
                      t_json_end - t_json_start,
                      req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids.size() : 0,
-                     req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids_pb.size() : 0,
+                     req.generate_configs.size() > 0 ? req.generate_configs[0]->extra_info.size() : 0,
                      req.generate_configs.size() > 0 ? req.generate_configs[0]->ele_rq_ids_pb16.size() : 0);
     if (metric_reporter_) {
         metric_reporter_->reportQpsMetric(req.source);
