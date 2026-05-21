@@ -9,10 +9,117 @@
 #include <iostream>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include "autil/legacy/base64.h"
 
 // token_num：每条约束路径的语义ID长度（token数量）
 static const int token_num = 3;
+
+// ---------------------------------------------------------------------------
+// CsrLayerBaseIds：存储每层约束解码的 base token ID。
+//
+// extra_info (flat uint16) 中传递的值是 **偏移量** 而非绝对 token ID。
+// 三元组 (offset_0, offset_1, offset_2) 对应的实际 token ID 为：
+//   token_id_i = base_ids[i] + offset_i
+//
+// base token ID 来源于 tokenizer_config.json 中 <shop_0_0> / <shop_1_0> / <shop_2_0>
+// 的 token ID，在模型加载时通过 initFromCkptPath() 一次性解析。
+//
+// 当前硬编码 shop_0/1/2 三层，后续可扩展为可配置。
+// ---------------------------------------------------------------------------
+class CsrLayerBaseIds {
+public:
+    static CsrLayerBaseIds& instance() {
+        static CsrLayerBaseIds inst;
+        return inst;
+    }
+
+    // 从 ckpt_path/tokenizer_config.json 的 added_tokens_decoder 中查找
+    // <shop_0_0>, <shop_1_0>, <shop_2_0> 的 token ID。
+    // 如果文件不存在或 token 未找到，保持 initialized_ = false，decode 回退到直接使用 uint16 值。
+    void initFromCkptPath(const std::string& ckpt_path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        initialized_ = false;
+
+        // 目标 token 名称（硬编码三层）
+        const std::string target_tokens[3] = {"<shop_0_0>", "<shop_1_0>", "<shop_2_0>"};
+        bool found[3] = {false, false, false};
+
+        // 读取 tokenizer_config.json
+        std::string config_path = ckpt_path + "/tokenizer_config.json";
+        std::ifstream file(config_path);
+        if (!file.is_open()) {
+            // tokenizer_config.json 不存在，尝试 tokenizer 子目录
+            config_path = ckpt_path + "/tokenizer/tokenizer_config.json";
+            file.open(config_path);
+            if (!file.is_open()) {
+                return;  // 文件不存在，保持未初始化
+            }
+        }
+
+        std::ostringstream ss;
+        ss << file.rdbuf();
+        const std::string content = ss.str();
+
+        // 逐个查找目标 token：
+        // added_tokens_decoder 格式: "TOKEN_ID": {"content": "<shop_0_0>", ...}
+        // 查找 "content": "<shop_X_0>" 后向前回溯找到对应的 key（token ID）
+        for (int layer = 0; layer < 3; ++layer) {
+            std::string pattern = "\"content\": \"" + target_tokens[layer] + "\"";
+            size_t pos = content.find(pattern);
+            if (pos == std::string::npos) {
+                // 尝试无空格格式
+                pattern = "\"content\":\"" + target_tokens[layer] + "\"";
+                pos = content.find(pattern);
+            }
+            if (pos == std::string::npos) continue;
+
+            // 向前查找最近的 "DIGITS": { 模式（即 added_tokens_decoder 的 key）
+            // 从 pos 向前搜索 '{'，再向前找 '"DIGITS"'
+            size_t brace = content.rfind('{', pos);
+            if (brace == std::string::npos || brace == 0) continue;
+
+            // 在 '{' 前面找到类似 "152001": 的模式
+            size_t colon = content.rfind(':', brace - 1);
+            if (colon == std::string::npos) continue;
+
+            // 提取 colon 左边的 quoted string
+            size_t quote_end = content.rfind('"', colon - 1);
+            if (quote_end == std::string::npos) continue;
+            size_t quote_start = content.rfind('"', quote_end - 1);
+            if (quote_start == std::string::npos) continue;
+
+            std::string key_str = content.substr(quote_start + 1, quote_end - quote_start - 1);
+            try {
+                base_ids_[layer] = std::stoi(key_str);
+                found[layer] = true;
+            } catch (...) {
+                continue;
+            }
+        }
+
+        if (found[0] && found[1] && found[2]) {
+            initialized_ = true;
+        }
+    }
+
+    bool initialized() const { return initialized_; }
+
+    // 获取第 layer 层的 base token ID（0-indexed）
+    int baseId(int layer) const { return base_ids_[layer]; }
+
+    // 获取所有 base IDs 的指针（用于批量操作）
+    const int* baseIds() const { return base_ids_; }
+
+private:
+    CsrLayerBaseIds() = default;
+    CsrLayerBaseIds(const CsrLayerBaseIds&) = delete;
+    CsrLayerBaseIds& operator=(const CsrLayerBaseIds&) = delete;
+
+    std::mutex mutex_;
+    bool initialized_ = false;
+    int  base_ids_[3] = {0, 0, 0};
+};
 
 // sids<N>：N个token ID组成的定长数组，表示一条约束路径
 template<int N>
@@ -330,16 +437,18 @@ std::vector<sids<N>> decodePackedEleRqIds(const std::string& base64_str) {
     uint32_t count = 0;
     std::memcpy(&count, raw.data(), sizeof(uint32_t));
 
-    // 校验数据大小
-    const size_t expected_size = sizeof(uint32_t) + sizeof(uint64_t) * count;
-    if (raw.size() < expected_size) {
+    // 计算实际可用的 packed ID 个数（数据不足的尾部忽略）
+    const size_t payload_bytes = raw.size() - sizeof(uint32_t);
+    const uint32_t available_count = static_cast<uint32_t>(payload_bytes / sizeof(uint64_t));
+    const uint32_t actual_count = std::min(count, available_count);
+    if (actual_count == 0) {
         return result;
     }
 
-    result.reserve(count);
+    result.reserve(actual_count);
     const uint64_t* packed = reinterpret_cast<const uint64_t*>(raw.data() + sizeof(uint32_t));
 
-    for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t i = 0; i < actual_count; ++i) {
         sids<N> sid{};
         uint64_t pk = packed[i];
         if constexpr (N == 3) {
@@ -367,11 +476,12 @@ std::vector<sids<N>> decodePackedEleRqIds(const std::string& base64_str) {
 // decodeFlatUint16EleRqIds<N>
 //
 // 从 base64 编码的 flat uint16 二进制数据解码为 sids<N>。
-// 每组 3 个 uint16 直接存储 token ID，无需位运算拆包。
+// 每组 3 个 uint16 直接存储 token 偏移量，无需位运算拆包。
 //
-// 二进制格式：
-//   [uint32_t count]            — 三元组个数（不是 uint16 个数）
-//   [uint16_t data[count*3]]    — 每 3 个连续 uint16 为一组 (t0, t1, t2)
+// 二进制格式（无 header，纯 uint16 数组）：
+//   [uint16_t data[triple_count*3]]  — 每 3 个连续 uint16 为一组 (t0, t1, t2)
+//   triple_count = total_bytes / (sizeof(uint16_t) * 3)
+//   不足 3 个 uint16 的尾部忽略
 //
 // 注意：uint16 最大 65535，仅覆盖词表 ≤65535 的模型。
 // ---------------------------------------------------------------------------
@@ -384,36 +494,40 @@ std::vector<sids<N>> decodeFlatUint16EleRqIds(const std::string& base64_str) {
 
     // base64 解码 → 原始字节
     std::string raw = autil::legacy::Base64DecodeFast(base64_str);
-    if (raw.size() < sizeof(uint32_t)) {
+
+    // 无 header：直接从总字节数计算完整三元组个数
+    const size_t bytes_per_triple = sizeof(uint16_t) * 3;  // 6 bytes
+    const uint32_t actual_count = static_cast<uint32_t>(raw.size() / bytes_per_triple);
+    if (actual_count == 0) {
         return result;
     }
 
-    // 读取 count（三元组个数）
-    uint32_t count = 0;
-    std::memcpy(&count, raw.data(), sizeof(uint32_t));
+    result.reserve(actual_count);
+    const uint16_t* data = reinterpret_cast<const uint16_t*>(raw.data());
 
-    // 校验数据大小
-    const size_t expected_size = sizeof(uint32_t) + sizeof(uint16_t) * count * 3;
-    if (raw.size() < expected_size) {
-        return result;
-    }
+    // extra_info 中的 uint16 值是偏移量，需要加上每层的 base token ID 才是实际 token ID。
+    // CsrLayerBaseIds 在模型加载时从 tokenizer_config.json 初始化。
+    // 未初始化时回退到直接使用 uint16 值（向后兼容）。
+    const auto& bases = CsrLayerBaseIds::instance();
+    const bool apply_offset = bases.initialized();
+    const int base0 = apply_offset ? bases.baseId(0) : 0;
+    const int base1 = apply_offset ? bases.baseId(1) : 0;
+    const int base2 = apply_offset ? bases.baseId(2) : 0;
 
-    result.reserve(count);
-    const uint16_t* data = reinterpret_cast<const uint16_t*>(raw.data() + sizeof(uint32_t));
-
-    for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t i = 0; i < actual_count; ++i) {
         sids<N> sid{};
         if constexpr (N == 3) {
-            sid.rq_id[0] = static_cast<int>(data[i * 3 + 0]);
-            sid.rq_id[1] = static_cast<int>(data[i * 3 + 1]);
-            sid.rq_id[2] = static_cast<int>(data[i * 3 + 2]);
+            sid.rq_id[0] = base0 + static_cast<int>(data[i * 3 + 0]);
+            sid.rq_id[1] = base1 + static_cast<int>(data[i * 3 + 1]);
+            sid.rq_id[2] = base2 + static_cast<int>(data[i * 3 + 2]);
             // 重新计算 packed_key 以保证排序正确
             sid.packed_key = (uint64_t(sid.rq_id[0]) << 36) |
                              (uint64_t(sid.rq_id[1]) << 18) |
                              uint64_t(sid.rq_id[2]);
         } else {
+            const int bases_arr[3] = {base0, base1, base2};
             for (int j = 0; j < N && j < 3; ++j) {
-                sid.rq_id[j] = static_cast<int>(data[i * 3 + j]);
+                sid.rq_id[j] = bases_arr[j] + static_cast<int>(data[i * 3 + j]);
             }
             if constexpr (N == 3) {
                 sid.packed_key = (uint64_t(sid.rq_id[0]) << 36) |

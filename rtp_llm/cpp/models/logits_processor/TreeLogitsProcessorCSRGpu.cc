@@ -395,21 +395,77 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
             }
             auto t2 = autil::TimeUtility::currentTimeInMicroSeconds();
 
+            // 检查是否有 token ID 超出 vocab_size（加 base offset 后可能发生）
+            // 理论上每层 token ID 范围：
+            //   layer 0: [base0, base1)     → offset ∈ [0, base1 - base0)
+            //   layer 1: [base1, base2)     → offset ∈ [0, base2 - base1)
+            //   layer 2: [base2, vocab_size) → offset ∈ [0, vocab_size - base2)
+            size_t oov_count = 0;
+            size_t oov_layer_counts[token_num] = {};
+            const auto& bases_check = CsrLayerBaseIds::instance();
+            const int base_arr[3] = {bases_check.baseId(0), bases_check.baseId(1), bases_check.baseId(2)};
+            size_t oov_samples_logged = 0;
+            for (size_t idx = 0; idx < origin_rq_ids.size(); ++idx) {
+                const auto& sid = origin_rq_ids[idx];
+                bool has_oov = false;
+                for (int j = 0; j < token_num; ++j) {
+                    if (sid.rq_id[j] < 0 || sid.rq_id[j] >= vocab_size) {
+                        ++oov_count;
+                        ++oov_layer_counts[j];
+                        has_oov = true;
+                    }
+                }
+                if (has_oov && oov_samples_logged < 5) {
+                    // 打出前 5 个越界三元组的详细信息（raw offset = token_id - base）
+                    RTP_LLM_LOG_WARNING("csr_timing[stage=oov_detail] triple_idx=%zu, "
+                                        "token_ids=[%d,%d,%d], offsets=[%d,%d,%d], "
+                                        "valid_ranges=[%d-%d, %d-%d, %d-%d], vocab_size=%d",
+                                        idx,
+                                        sid.rq_id[0], sid.rq_id[1], sid.rq_id[2],
+                                        sid.rq_id[0] - base_arr[0],
+                                        sid.rq_id[1] - base_arr[1],
+                                        sid.rq_id[2] - base_arr[2],
+                                        base_arr[0], base_arr[1] - 1,
+                                        base_arr[1], base_arr[2] - 1,
+                                        base_arr[2], vocab_size - 1,
+                                        vocab_size);
+                    ++oov_samples_logged;
+                }
+            }
+            if (oov_count > 0) {
+                RTP_LLM_LOG_WARNING("csr_timing[stage=oov_check] vocab_size=%d, total_triples=%zu, "
+                                    "oov_triples=%zu, oov_layer0=%zu, oov_layer1=%zu, oov_layer2=%zu, "
+                                    "base_ids=[%d,%d,%d], max_valid_offsets=[%d,%d,%d]",
+                                    vocab_size, origin_rq_ids.size(),
+                                    oov_count, oov_layer_counts[0],
+                                    token_num > 1 ? oov_layer_counts[1] : 0,
+                                    token_num > 2 ? oov_layer_counts[2] : 0,
+                                    base_arr[0], base_arr[1], base_arr[2],
+                                    base_arr[1] - base_arr[0] - 1,
+                                    base_arr[2] - base_arr[1] - 1,
+                                    vocab_size - base_arr[2] - 1);
+            }
+
             std::sort(origin_rq_ids.begin(), origin_rq_ids.end());
             auto csr_index = std::make_shared<CSRIndex<token_num>>();
             bool success   = build_csr_from_fresh_data<token_num>(origin_rq_ids, *csr_index, vocab_size);
             auto t3 = autil::TimeUtility::currentTimeInMicroSeconds();
 
             const size_t ids_count = origin_rq_ids.size();
+            const auto& bases = CsrLayerBaseIds::instance();
             RTP_LLM_LOG_INFO("csr_timing[stage=cpu_build] submit_abs_us=%ld, start_abs_us=%ld, end_abs_us=%ld, "
-                             "queue_us=%ld, ele_rq_ids_size=%zu, decode_us=%ld, sort_build_us=%ld, total_us=%ld, encode=%d",
+                             "queue_us=%ld, ele_rq_ids_size=%zu, decode_us=%ld, sort_build_us=%ld, total_us=%ld, "
+                             "encode=%d, base_ids=[%d,%d,%d], base_initialized=%d, oov_count=%zu",
                              t_submit, t0, t3,
                              t0 - t_submit,
                              ids_count,
                              t2 - t0,
                              t3 - t2,
                              t3 - t0,
-                             encode_mode);
+                             encode_mode,
+                             bases.baseId(0), bases.baseId(1), bases.baseId(2),
+                             bases.initialized() ? 1 : 0,
+                             oov_count);
             if (!success) {
                 return nullptr;
             }

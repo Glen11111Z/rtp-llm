@@ -4,11 +4,16 @@
 #include "rtp_llm/cpp/models/logits_processor/TreeLogitsProcessor.h"
 #include "rtp_llm/cpp/models/logits_processor/TreeLogitsProcessorCSR.h"
 #include "rtp_llm/cpp/models/logits_processor/MultiSeqLogitsProcessor.h"
+#include "rtp_llm/cpp/models/logits_processor/csr_utils.h"
 
 namespace rtp_llm {
 
 void LogitsProcessorFactory::init(const std::string& ckpt_path, const std::string& tree_decode_config) {
     PrefixToCandidateTokens::instance()->reloadPrefixDictWithPrefix(ckpt_path, tree_decode_config);
+
+    // 从 tokenizer_config.json 加载 CSR 约束解码的每层 base token ID
+    // （<shop_0_0>, <shop_1_0>, <shop_2_0> 的 token ID）
+    CsrLayerBaseIds::instance().initFromCkptPath(ckpt_path);
 }
 
 std::vector<BaseLogitsProcessorPtr>
