@@ -56,10 +56,18 @@ BufferPtr CudaDevice::embeddingLookup(const EmbeddingLookupParams& params) {
             }
         }
         if (has_invalid) {
+            const std::string full_tokens = build_full_tokens_str();
             RTP_LLM_LOG_ERROR("embeddingLookup: full prompt tokens (token_num="
                               + std::to_string(token_num) + ", vocab_size="
                               + std::to_string(vocab_size) + ") = "
-                              + build_full_tokens_str());
+                              + full_tokens);
+            // Direct stderr write as a safety net in case async logger does not flush
+            // before std::terminate / abort.
+            fprintf(stderr,
+                    "[FATAL] embeddingLookup: token id out of vocab range. "
+                    "token_num=%zu vocab_size=%zu full_tokens=%s\n",
+                    (size_t)token_num, (size_t)vocab_size, full_tokens.c_str());
+            fflush(stderr);
             throw std::runtime_error(
                 "embeddingLookup: token id out of vocab range [0, "
                 + std::to_string(vocab_size) + "), see ERROR log for full prompt");
