@@ -4,11 +4,16 @@
 #include "rtp_llm/cpp/models/logits_processor/TreeLogitsProcessor.h"
 #include "rtp_llm/cpp/models/logits_processor/TreeLogitsProcessorCSR.h"
 #include "rtp_llm/cpp/models/logits_processor/MultiSeqLogitsProcessor.h"
+#include "rtp_llm/cpp/models/logits_processor/csr_utils.h"
 
 namespace rtp_llm {
 
 void LogitsProcessorFactory::init(const std::string& ckpt_path, const std::string& tree_decode_config) {
     PrefixToCandidateTokens::instance()->reloadPrefixDictWithPrefix(ckpt_path, tree_decode_config);
+
+    // 从 tokenizer_config.json 加载 CSR 约束解码的每层 base token ID
+    // （<shop_0_0>, <shop_1_0>, <shop_2_0> 的 token ID）
+    CsrLayerBaseIds::instance().initFromCkptPath(ckpt_path);
 }
 
 std::vector<BaseLogitsProcessorPtr>
@@ -24,11 +29,13 @@ LogitsProcessorFactory::createLogitsProcessors(std::shared_ptr<GenerateInput> ge
         result.push_back(std::static_pointer_cast<BaseLogitsProcessor>(think_processor));
     }
 
-    // 基于 CSR 前缀树的限制性解码：ele_rq_ids 非空时启用。
+    // 基于 CSR 前缀树的限制性解码：ele_rq_ids 或 ele_rq_ids_pb 非空时启用。
     // 否则回退到原有基于 DFA 状态机的 TreeLogitsProcessor。
-    if (!generate_input->generate_config->ele_rq_ids.empty()) {
-        auto csr_processor =
-            TreeLogitsProcessorCSR::fromGenerateInput(generate_input, init_batch_size, vocab_size);
+    if (!generate_input->generate_config->ele_rq_ids.empty()
+        || !generate_input->generate_config->ele_rq_ids_pb.empty()
+        || !generate_input->generate_config->extra_info.empty()) {
+        auto csr_processor = TreeLogitsProcessorCSR::fromGenerateInput(
+            generate_input, init_batch_size, vocab_size);
         if (csr_processor != nullptr) {
             result.push_back(std::static_pointer_cast<BaseLogitsProcessor>(csr_processor));
         }

@@ -179,6 +179,34 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
 
     RTP_LLM_LOG_DEBUG("stream [%ld], new_tokens size = [%ld]", stream->streamId(), new_tokens.numel());
 
+    // Propagate effective_beam_sizes from sampler output back to the stream
+    // so that subsequent iterations and final output use the reduced beam_size.
+    // When beam_size is reduced, truncate dispatch buffers to the effective size
+    // so that updateKvCacheBlocks sees a matching src_batch_indices size and
+    // automatically frees KV cache blocks for the discarded beams.
+    // TEMPORARILY DISABLED: dd3a2503e effective_beam_size truncation breaks
+    // TreeLogitsProcessorCSR (size() vs new_tokens.size(0) mismatch -> kernel OOB).
+    // Re-enable after logits processor is taught to follow reduced beam size.
+    if (false && !sampler_output.effective_beam_sizes.empty()) {
+        auto it = sampler_output.effective_beam_sizes.find((size_t)batch_idx_out);
+        if (it != sampler_output.effective_beam_sizes.end()) {
+            int effective_size = it->second;
+            stream->setEffectiveBeamSize(effective_size);
+
+            // After setEffectiveBeamSize, currentBatchSize()/nextBatchSize() return
+            // the reduced value. Truncate buffers passed to update() so that
+            // CompleteTokenIds and updateKvCacheBlocks operate on the reduced batch.
+            if (has_beam_search && effective_size < (int)next_batch_size) {
+                batch_new_all_token_ids = new_all_token_ids.slice(0, batch_idx_out, batch_idx_out + effective_size);
+                src_batch_indices       = sampler_output.beam_index.slice(0, batch_idx_out, batch_idx_out + effective_size);
+                new_tokens              = new_tokens_all.slice(0, batch_idx_out, batch_idx_out + effective_size);
+                if (batch_cum_log_probs.defined()) {
+                    batch_cum_log_probs = sampler_output.cum_log_probs.slice(0, batch_idx_out, batch_idx_out + effective_size);
+                }
+            }
+        }
+    }
+
     stream->update({has_beam_search ? batch_new_all_token_ids : new_tokens,
                     1,
                     batch_hidden_states,

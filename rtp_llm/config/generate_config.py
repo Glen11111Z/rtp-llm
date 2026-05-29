@@ -150,6 +150,8 @@ class GenerateConfig(BaseModel):
     unique_key: str = ""
 
     ele_rq_ids: List[str] = []
+    ele_rq_ids_pb: str = ""  # base64 encoded packed uint64 binary
+    extra_info: str = ""  # base64 encoded flat uint16 binary (3×uint16 per triple, formerly ele_rq_ids_pb16)
 
     def gen_hash_value(self):
         cp = copy.copy(self)

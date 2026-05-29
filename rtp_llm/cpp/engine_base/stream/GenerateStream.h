@@ -165,6 +165,13 @@ public:
     int  maxNumBeams() const;
     bool hasNumBeams() const;
 
+    // Dynamic beam size adjustment for constrained decoding.
+    // When the constrained candidate set is smaller than beam_size,
+    // effective_beam_size can be reduced dynamically.
+    void setEffectiveBeamSize(int effective_beam_size);
+    int  effectiveBeamSize() const;
+    bool hasReducedBeamSize() const;
+
     bool needTilingForSampling() const;
 
     int    numReturnSequences() const;
@@ -567,6 +574,10 @@ protected:
     bool need_release_resource_ = true;
 
     bool return_all_probs_ = false;
+
+    // Dynamic beam size: when constrained decoding reduces candidates below beam_size,
+    // this stores the effective (reduced) beam size. -1 means not set (use normal beam_size).
+    int effective_beam_size_ = -1;
 
     bool last_block_aligned_ = false;
 

@@ -92,8 +92,19 @@ std::shared_ptr<GenerateConfig> QueryConverter::transGenerateConfig(const Genera
     TRANS_OPTIONAL(batch_group_timeout);
     TRANS_OPTIONAL(force_batch);
 
-    for (const auto& rq_id : config_proto->ele_rq_ids()) {
-        generate_config->ele_rq_ids.push_back(rq_id);
+    {
+        auto t0 = autil::TimeUtility::currentTimeInMicroSeconds();
+        for (const auto& rq_id : config_proto->ele_rq_ids()) {
+            generate_config->ele_rq_ids.push_back(rq_id);
+        }
+        generate_config->ele_rq_ids_pb = config_proto->ele_rq_ids_pb();
+        generate_config->extra_info = config_proto->extra_info();
+        auto t1 = autil::TimeUtility::currentTimeInMicroSeconds();
+        RTP_LLM_LOG_INFO("csr_timing[stage=proto_deser] ele_rq_ids_count=%d, ele_rq_ids_pb_size=%zu, extra_info_size=%zu, deser_us=%ld",
+                         config_proto->ele_rq_ids_size(),
+                         config_proto->ele_rq_ids_pb().size(),
+                         config_proto->extra_info().size(),
+                         t1 - t0);
     }
 
     return generate_config;

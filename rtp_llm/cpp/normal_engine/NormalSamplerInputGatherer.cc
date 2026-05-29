@@ -173,6 +173,12 @@ void NormalSamplerInputGatherer::fillSamplerCommonInputs(SamplerInputs&         
         for (int i = 0; i < sampler_batch_size; ++i) {
             input_lengths[batch_idx]      = stream->inputLength();
             sequence_lengths[batch_idx]   = stream->seqLength() + propose_step;
+            // Use effective beam size for constrained decoding:
+            // If beam_size has been dynamically reduced, use the reduced value.
+            num_beams_in[batch_idx]       = stream->hasReducedBeamSize()
+                                                ? (uint64_t)stream->effectiveBeamSize()
+                                                : (uint64_t)stream->currentNumBeams();
+            num_beams_out[batch_idx]      = (uint64_t)stream->nextNumBeams();
             num_beams_in[batch_idx]       = stream->currentNumBeams();
             num_beams_out[batch_idx]      = stream->nextNumBeams();
             top_k[batch_idx]              = stream->generateConfig()->top_k;

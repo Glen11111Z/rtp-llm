@@ -156,6 +156,10 @@ def trans_input(input_py: GenerateInput):
 
     if input_py.generate_config.ele_rq_ids:
         generate_config_pb.ele_rq_ids.extend(input_py.generate_config.ele_rq_ids)
+    if input_py.generate_config.ele_rq_ids_pb:
+        generate_config_pb.ele_rq_ids_pb = input_py.generate_config.ele_rq_ids_pb
+    if input_py.generate_config.extra_info:
+        generate_config_pb.extra_info = input_py.generate_config.extra_info
 
     for i in range(len(input_py.generate_config.stop_words_list)):
         stop_words = generate_config_pb.stop_words_list.rows.add()

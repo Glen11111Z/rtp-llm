@@ -72,6 +72,8 @@ public:
     std::vector<int>              sp_advice_prompt_token_ids;
 
     std::vector<std::string> ele_rq_ids;
+    std::string              ele_rq_ids_pb;    // base64 encoded packed uint64 binary (3 tokens → 1×uint64)
+    std::string              extra_info;       // base64 encoded flat uint16 binary (3 tokens → 3×uint16, formerly ele_rq_ids_pb16)
 
     bool do_sample             = true;
     bool can_use_pd_separation = true;
@@ -92,7 +94,6 @@ public:
     bool               force_batch = false;  // If true, streams with same batch_group_id must be scheduled together
     std::optional<int> batch_group_timeout;
     std::string      unique_key;
-
 
     bool top1() {
         return top_k == 1;
@@ -231,6 +232,8 @@ public:
         JSONIZE_OPTIONAL(batch_group_timeout);
         JSONIZE(unique_key);
         JSONIZE(ele_rq_ids);
+        JSONIZE(ele_rq_ids_pb);
+        JSONIZE(extra_info);
 #undef JSONIZE
 #undef JSONIZE_OPTIONAL
     }

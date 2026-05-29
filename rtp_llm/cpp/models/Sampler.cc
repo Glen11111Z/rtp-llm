@@ -6,6 +6,7 @@
 #include "rtp_llm/models_py/bindings/core/ExecOps.h"
 #include <unordered_set>
 #include "rtp_llm/cpp/utils/ProfilingScope.h"
+#include <cfloat>
 
 using namespace std;
 
@@ -55,6 +56,9 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     auto all_cum_log_probs_out = variable_num_beams && inputs.cum_log_probs.defined() ?
                                      torch::empty({(int64_t)inputs.batch_size_out}, torch::kFloat32) :
                                      inputs.cum_log_probs;
+
+    // Track effective beam sizes per stream for constrained decoding
+    std::unordered_map<size_t, int> effective_beam_sizes;
 
     size_t from_batch_idx_in = 0, to_batch_idx_in = 0;
     size_t from_batch_idx_out = 0;
@@ -179,12 +183,44 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                 cum_log_probs_out.defined() ?
                     cum_log_probs_out.reshape({(int64_t)beam_batch_size, (int64_t)cur_num_beams_out}) :
                     torch::Tensor();
-
+            
             token_ids_out_reshaped.copy_(output.token_ids);
             if (cum_log_probs_out_reshaped.defined()) {
                 cum_log_probs_out_reshaped.copy_(output.cum_log_probs);
             }
             beam_indices.reshape({(int64_t)beam_batch_size, (int64_t)cur_num_beams_out}).copy_(output.beam_indices);
+ 
+            // Filter out beams with -inf cum_log_probs (produced by constrained decoding masks).
+            // For each batch item, compact valid beams to the front and update beam count.
+            auto* cum_log_probs_data = cum_log_probs_out.data_ptr<float>();
+            auto* token_ids_data     = token_ids_out.data_ptr<int32_t>();
+            auto* beam_indices_data  = beam_indices.data_ptr<int32_t>();
+            for (size_t batch_idx = 0; batch_idx < beam_batch_size; ++batch_idx) {
+                size_t valid_beam_count = 0;
+                for (size_t beam_idx = 0; beam_idx < cur_num_beams_out; ++beam_idx) {
+                    const size_t src_offset = batch_idx * cur_num_beams_out + beam_idx;
+                    if (cum_log_probs_data[src_offset] <=-FLT_MAX) {
+                        continue;
+                    }
+                    if (valid_beam_count != beam_idx) {
+                        const size_t dst_offset = batch_idx * cur_num_beams_out + valid_beam_count;
+                        cum_log_probs_data[dst_offset] = cum_log_probs_data[src_offset];
+                        beam_indices_data[dst_offset]  = beam_indices_data[src_offset];
+                        std::memcpy(token_ids_data + dst_offset * max_seq_len,
+                                    token_ids_data + src_offset * max_seq_len,
+                                    max_seq_len * sizeof(int32_t));
+                    }
+                    ++valid_beam_count;
+                }
+                // Keep at least the first beam to avoid empty output.
+                if (valid_beam_count == 0) {
+                    valid_beam_count = 1;
+                }
+                for (size_t out_idx = 0; out_idx < cur_num_beams_out; ++out_idx) {
+                    size_t global_out_idx = from_batch_idx_out + batch_idx * cur_num_beams_out + out_idx;
+                    effective_beam_sizes[global_out_idx] = valid_beam_count;
+                }
+            }
 
             success.fill_(true);
         }
@@ -193,12 +229,15 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         from_batch_idx_in  = to_batch_idx_in;
         from_batch_idx_out = to_batch_idx_out;
     }
-
-    return SamplerOutput({std::move(all_token_ids_out),
-                          std::move(all_cum_log_probs_out),
-                          std::move(inputs.all_probs),
-                          std::move(all_beam_indices),
-                          std::move(all_success)});
+    // TODO(xinfei.sxf) 优化copy token_ids
+    SamplerOutput sampler_output;
+    sampler_output.token_ids      = std::move(all_token_ids_out);
+    sampler_output.cum_log_probs  = std::move(all_cum_log_probs_out);
+    sampler_output.all_probs      = std::move(inputs.all_probs);
+    sampler_output.beam_index     = std::move(all_beam_indices);
+    sampler_output.success        = std::move(all_success);
+    sampler_output.effective_beam_sizes = std::move(effective_beam_sizes);
+    return sampler_output;
 }
 
 void Sampler::preprocessLogits(const SamplerInputs& inputs) {

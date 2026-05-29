@@ -24,6 +24,7 @@
 #include <future>
 
 #include "autil/LockFreeThreadPool.h"
+#include "autil/TimeUtility.h"
 
 namespace rtp_llm {
 
@@ -277,10 +278,12 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     }
 
     // --- 等待后台 CPU 构建完成 ---
+    auto t_wait_start = autil::TimeUtility::currentTimeInMicroSeconds();
     std::shared_ptr<CSRIndex<token_num>> csr_index;
     if (async_cpu_init_future_.valid()) {
         csr_index = async_cpu_init_future_.get();
     }
+    auto t_wait_end = autil::TimeUtility::currentTimeInMicroSeconds();
 
     if (!csr_index) {
         // 构建失败：保持 tree_infos_ 为空，后续调用直接无操作返回
@@ -289,6 +292,7 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
     }
 
     // --- H2D 拷贝（在主线程执行，确保 GPU context 正确）---
+    auto t_h2d_start = autil::TimeUtility::currentTimeInMicroSeconds();
     torch::Tensor d_indptr;
     {
         auto& v = csr_index->indptr;
@@ -342,6 +346,15 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
         {static_cast<int64_t>(pending_num_)},
         torch::TensorOptions().device(torch::kCUDA).dtype(torch::kInt32));
 
+    auto t_h2d_end = autil::TimeUtility::currentTimeInMicroSeconds();
+
+    RTP_LLM_LOG_INFO("csr_timing[stage=ensure_init] call_abs_us=%ld, wait_cpu_build_us=%ld, h2d_us=%ld, total_us=%ld, ele_rq_ids_size=%zu",
+                     t_wait_start,
+                     t_wait_end - t_wait_start,
+                     t_h2d_end - t_h2d_start,
+                     t_h2d_end - t_wait_start,
+                     csr_index->packed_csr_tokens.size());
+
     async_initialized_ = true;
 }
 
@@ -354,7 +367,9 @@ void TreeLogitsProcessorCSR::ensureInitialized() {
 // =============================================================================
 std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInput(
     std::shared_ptr<GenerateInput> generate_input, int32_t num, int32_t vocab_size) {
-    if (generate_input->generate_config->ele_rq_ids.empty()) {
+    if (generate_input->generate_config->ele_rq_ids.empty()
+        && generate_input->generate_config->ele_rq_ids_pb.empty()
+        && generate_input->generate_config->extra_info.empty()) {
         return nullptr;
     }
 
@@ -369,14 +384,102 @@ std::shared_ptr<TreeLogitsProcessorCSR> TreeLogitsProcessorCSR::fromGenerateInpu
     // 使用全局共享线程池执行后台 CPU 构建，避免每个请求新建 OS 线程。
     // lambda 按值捕获 generate_input shared_ptr，保证 ele_rq_ids 字符串数据生命周期安全，
     // 同时避免 std::vector<std::string> 的深拷贝开销。
+    auto t_submit = autil::TimeUtility::currentTimeInMicroSeconds();
     auto pool = getCsrInitThreadPool();
     processor_ptr->async_cpu_init_future_ = pool->async(
-        [generate_input, vocab_size]() -> std::shared_ptr<CSRIndex<token_num>> {
-            const auto& ele_rq_ids = generate_input->generate_config->ele_rq_ids;
-            auto origin_rq_ids = split_strings<token_num>(ele_rq_ids);
+        [generate_input, vocab_size, t_submit]() -> std::shared_ptr<CSRIndex<token_num>> {
+            auto t0 = autil::TimeUtility::currentTimeInMicroSeconds();
+
+            // 选择解码路径：
+            //   extra_info: 3×uint16 flat，体积最小（6 bytes/组），直接数组读取 (原 ele_rq_ids_pb16)
+            //   pb:         1×uint64 packed，紧凑编码（8 bytes/组），位运算拆包
+            //   默认:      split_strings 逐字符解析
+            const auto& pb   = generate_input->generate_config->ele_rq_ids_pb;
+            const auto& pb16 = generate_input->generate_config->extra_info;
+            // 0=split_strings, 1=packed int64, 2=flat uint16
+            const int encode_mode = !pb16.empty() ? 2 : (!pb.empty() ? 1 : 0);
+
+            std::vector<sids<token_num>> origin_rq_ids;
+            if (encode_mode == 2) {
+                origin_rq_ids = decodeFlatUint16EleRqIds<token_num>(pb16);
+            } else if (encode_mode == 1) {
+                origin_rq_ids = decodePackedEleRqIds<token_num>(pb);
+            } else {
+                origin_rq_ids = split_strings<token_num>(generate_input->generate_config->ele_rq_ids);
+            }
+            auto t2 = autil::TimeUtility::currentTimeInMicroSeconds();
+
+            // 检查是否有 token ID 超出 vocab_size（加 base offset 后可能发生）
+            // 理论上每层 token ID 范围：
+            //   layer 0: [base0, base1)     → offset ∈ [0, base1 - base0)
+            //   layer 1: [base1, base2)     → offset ∈ [0, base2 - base1)
+            //   layer 2: [base2, vocab_size) → offset ∈ [0, vocab_size - base2)
+            size_t oov_count = 0;
+            size_t oov_layer_counts[token_num] = {};
+            const auto& bases_check = CsrLayerBaseIds::instance();
+            const int base_arr[3] = {bases_check.baseId(0), bases_check.baseId(1), bases_check.baseId(2)};
+            size_t oov_samples_logged = 0;
+            for (size_t idx = 0; idx < origin_rq_ids.size(); ++idx) {
+                const auto& sid = origin_rq_ids[idx];
+                bool has_oov = false;
+                for (int j = 0; j < token_num; ++j) {
+                    if (sid.rq_id[j] < 0 || sid.rq_id[j] >= vocab_size) {
+                        ++oov_count;
+                        ++oov_layer_counts[j];
+                        has_oov = true;
+                    }
+                }
+                if (has_oov && oov_samples_logged < 5) {
+                    // 打出前 5 个越界三元组的详细信息（raw offset = token_id - base）
+                    RTP_LLM_LOG_WARNING("csr_timing[stage=oov_detail] triple_idx=%zu, "
+                                        "token_ids=[%d,%d,%d], offsets=[%d,%d,%d], "
+                                        "valid_ranges=[%d-%d, %d-%d, %d-%d], vocab_size=%d",
+                                        idx,
+                                        sid.rq_id[0], sid.rq_id[1], sid.rq_id[2],
+                                        sid.rq_id[0] - base_arr[0],
+                                        sid.rq_id[1] - base_arr[1],
+                                        sid.rq_id[2] - base_arr[2],
+                                        base_arr[0], base_arr[1] - 1,
+                                        base_arr[1], base_arr[2] - 1,
+                                        base_arr[2], vocab_size - 1,
+                                        vocab_size);
+                    ++oov_samples_logged;
+                }
+            }
+            if (oov_count > 0) {
+                RTP_LLM_LOG_WARNING("csr_timing[stage=oov_check] vocab_size=%d, total_triples=%zu, "
+                                    "oov_triples=%zu, oov_layer0=%zu, oov_layer1=%zu, oov_layer2=%zu, "
+                                    "base_ids=[%d,%d,%d], max_valid_offsets=[%d,%d,%d]",
+                                    vocab_size, origin_rq_ids.size(),
+                                    oov_count, oov_layer_counts[0],
+                                    token_num > 1 ? oov_layer_counts[1] : 0,
+                                    token_num > 2 ? oov_layer_counts[2] : 0,
+                                    base_arr[0], base_arr[1], base_arr[2],
+                                    base_arr[1] - base_arr[0] - 1,
+                                    base_arr[2] - base_arr[1] - 1,
+                                    vocab_size - base_arr[2] - 1);
+            }
+
             std::sort(origin_rq_ids.begin(), origin_rq_ids.end());
             auto csr_index = std::make_shared<CSRIndex<token_num>>();
             bool success   = build_csr_from_fresh_data<token_num>(origin_rq_ids, *csr_index, vocab_size);
+            auto t3 = autil::TimeUtility::currentTimeInMicroSeconds();
+
+            const size_t ids_count = origin_rq_ids.size();
+            const auto& bases = CsrLayerBaseIds::instance();
+            RTP_LLM_LOG_INFO("csr_timing[stage=cpu_build] submit_abs_us=%ld, start_abs_us=%ld, end_abs_us=%ld, "
+                             "queue_us=%ld, ele_rq_ids_size=%zu, decode_us=%ld, sort_build_us=%ld, total_us=%ld, "
+                             "encode=%d, base_ids=[%d,%d,%d], base_initialized=%d, oov_count=%zu",
+                             t_submit, t0, t3,
+                             t0 - t_submit,
+                             ids_count,
+                             t2 - t0,
+                             t3 - t2,
+                             t3 - t0,
+                             encode_mode,
+                             bases.baseId(0), bases.baseId(1), bases.baseId(2),
+                             bases.initialized() ? 1 : 0,
+                             oov_count);
             if (!success) {
                 return nullptr;
             }

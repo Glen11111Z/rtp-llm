@@ -33,7 +33,11 @@ GenerateOutputs NormalGenerateStream::prepareGenerateOutput(const StreamUpdateIn
     GenerateOutputs generate_results;
     generate_results.request_id = request_id_;
 
-    for (int i = 0; i < nextBatchSize(); i++) {
+    // When constrained decoding has reduced the beam_size, only output
+    // effective_beam_size results instead of the full nextBatchSize().
+    int output_batch_size = hasReducedBeamSize() ? effectiveBeamSize() : nextBatchSize();
+    for (int i = 0; i < output_batch_size; i++) {
+
         GenerateOutput generate_output;
         generate_output.aux_info.iter_count = iter_count_;
         generate_output.output_ids          = torch::empty({1, (int64_t)output_len}, torch::kInt32);

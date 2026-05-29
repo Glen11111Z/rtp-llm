@@ -101,6 +101,8 @@ message GenerateConfigPB {
     string profile_trace_name = 57;
     bool aux_info = 58;
     repeated string ele_rq_ids = 59;
+    string ele_rq_ids_pb = 60;  // base64 encoded packed uint64 binary
+    string extra_info = 61;  // base64 encoded flat uint16 binary (3×uint16 per triple, formerly ele_rq_ids_pb16)
 }
 
 message MMPreprocessConfigPB {

@@ -174,6 +174,14 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
         int64_t start_time_us               = autil::TimeUtility::currentTimeInMicroSeconds();
         model_output                        = std::move(model_->forward(model_input));
         executor_collector.model_forward_us = autil::TimeUtility::currentTimeInMicroSeconds() - start_time_us;
+
+        if (stream_groups.totalContextBatchSize() > 0) {
+            RTP_LLM_LOG_INFO("csr_timing[stage=prefill] start_abs_us=%ld, forward_us=%ld, ctx_batch=%zu, gen_batch=%zu",
+                             start_time_us,
+                             executor_collector.model_forward_us,
+                             stream_groups.totalContextBatchSize(),
+                             stream_groups.totalDecodeBatchSize());
+        }
     }
     if (expert_balancer_) {
         int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();

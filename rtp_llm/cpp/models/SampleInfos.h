@@ -64,6 +64,10 @@ public:
     torch::Tensor all_probs;
     torch::Tensor beam_index;
     torch::Tensor success;
+
+    // Per-stream effective beam sizes after constrained decoding adjustment.
+    // Maps stream batch offset -> effective beam size. Empty if no adjustment needed.
+    std::unordered_map<size_t, int> effective_beam_sizes;
 };
 
 struct MergedOutput {
