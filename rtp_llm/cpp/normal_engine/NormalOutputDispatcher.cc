@@ -184,10 +184,10 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
     // When beam_size is reduced, truncate dispatch buffers to the effective size
     // so that updateKvCacheBlocks sees a matching src_batch_indices size and
     // automatically frees KV cache blocks for the discarded beams.
-    // TEMPORARILY DISABLED: dd3a2503e effective_beam_size truncation breaks
-    // TreeLogitsProcessorCSR (size() vs new_tokens.size(0) mismatch -> kernel OOB).
-    // Re-enable after logits processor is taught to follow reduced beam size.
-    if (false && !sampler_output.effective_beam_sizes.empty()) {
+    // The downstream logits processor (TreeLogitsProcessorCSR) follows the reduced
+    // beam size via updateMultiSeqStatus(src_batch_indices) before updateStatus(new_tokens),
+    // keeping size() == new_tokens.size(0).
+    if (!sampler_output.effective_beam_sizes.empty()) {
         auto it = sampler_output.effective_beam_sizes.find((size_t)batch_idx_out);
         if (it != sampler_output.effective_beam_sizes.end()) {
             int effective_size = it->second;

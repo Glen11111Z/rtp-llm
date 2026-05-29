@@ -179,8 +179,6 @@ void NormalSamplerInputGatherer::fillSamplerCommonInputs(SamplerInputs&         
                                                 ? (uint64_t)stream->effectiveBeamSize()
                                                 : (uint64_t)stream->currentNumBeams();
             num_beams_out[batch_idx]      = (uint64_t)stream->nextNumBeams();
-            num_beams_in[batch_idx]       = stream->currentNumBeams();
-            num_beams_out[batch_idx]      = stream->nextNumBeams();
             top_k[batch_idx]              = stream->generateConfig()->top_k;
             top_p[batch_idx]              = stream->generateConfig()->top_p;
             temperature[batch_idx]        = stream->generateConfig()->temperature;
