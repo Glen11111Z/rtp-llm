@@ -23,6 +23,12 @@ std::shared_ptr<GenerateInput> ChatService::fillGenerateInput(int64_t           
     metric_reporter_->reportFTNumBeansMetric(input->generate_config->maxNumBeams());
 
     const auto& vec  = rendered_input.input_ids;
+    // ChatRender (python) may produce empty input_ids when messages all have empty content
+    // or chat_template renders to empty string. Reject to avoid feeding empty token_ids to engine.
+    if (vec.empty()) {
+        throw HttpApiServerException(HttpApiServerException::EMPTY_PROMPT_ERROR,
+                                     "chat request rendered to empty token_ids!");
+    }
     input->input_ids = torch::from_blob(const_cast<int*>(vec.data()), {(int64_t)vec.size()}, torch::kInt32).clone();
 
     input->multimodal_inputs = std::move(rendered_input.multimodal_inputs);
@@ -183,6 +189,13 @@ void ChatService::chatCompletions(const std::unique_ptr<http_server::HttpRespons
     const auto            body = request.GetBody();
     ChatCompletionRequest chat_request;
     FromJsonString(chat_request, body);
+
+    // Reject empty messages at HTTP entry, before delegating to python ChatRender.
+    // Different renderers handle this inconsistently (some raise, some pass-through).
+    if (chat_request.messages.empty()) {
+        throw HttpApiServerException(HttpApiServerException::NO_PROMPT_ERROR,
+                                     "chat request has no messages!");
+    }
 
     AccessLogWrapper::logQueryAccess(body, request_id, chat_request.private_request);
 

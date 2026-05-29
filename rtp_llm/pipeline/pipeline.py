@@ -190,6 +190,11 @@ class Pipeline(object):
                 "expect string prompt, actual: " + str(prompt),
             )
         token_ids = self.tokenizer.encode(prompt)
+        if len(token_ids) == 0:
+            raise FtRuntimeException(
+                ExceptionType.EMPTY_PROMPT_ERROR,
+                "prompt tokenized to empty token_ids!",
+            )
 
         if generate_config.sp_advice_prompt != "":
             generate_config.sp_advice_prompt_token_ids = self.tokenizer.encode(
@@ -581,6 +586,11 @@ class Pipeline(object):
                     "prompt should have at least one token!",
                 )
             token_ids = self.tokenizer.encode(prompt)
+            if len(token_ids) == 0:
+                raise FtRuntimeException(
+                    ExceptionType.EMPTY_PROMPT_ERROR,
+                    "prompt tokenized to empty token_ids!",
+                )
 
             if generate_config.sp_advice_prompt != "":
                 generate_config.sp_advice_prompt_token_ids = self.tokenizer.encode(

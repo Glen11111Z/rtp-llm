@@ -26,6 +26,17 @@ void InferenceParsedRequest::extractRequestTexts(const RawRequest& req, Inferenc
             throw HttpApiServerException(HttpApiServerException::NO_PROMPT_ERROR, "no prompt in request!");
         }
     }
+    // align with python pipeline.forward / batch_forward: reject empty prompt at HTTP entry
+    if (pr.input_texts.empty()) {
+        throw HttpApiServerException(HttpApiServerException::EMPTY_PROMPT_ERROR,
+                                     "prompt should have at least one element!");
+    }
+    for (size_t i = 0; i < pr.input_texts.size(); ++i) {
+        if (pr.input_texts[i].empty()) {
+            throw HttpApiServerException(HttpApiServerException::EMPTY_PROMPT_ERROR,
+                                         "prompt should have at least one token!");
+        }
+    }
 }
 
 void InferenceParsedRequest::extractRequestUrls(const RawRequest& req, InferenceParsedRequest& pr) {
@@ -259,6 +270,12 @@ InferenceService::fillGenerateInput(int64_t                                reque
     auto               vec = token_processor_->encode(text);
     if (metric_reporter_) {
         metric_reporter_->reportFTPreTokenProcessorRtMetric(timer.done_ms());
+    }
+    // tokenizer may return empty vector for whitespace-only / unsupported input.
+    // Reject here to avoid feeding empty input_ids to the engine / sampler.
+    if (vec.empty()) {
+        throw HttpApiServerException(HttpApiServerException::EMPTY_PROMPT_ERROR,
+                                     "prompt tokenized to empty token_ids!");
     }
     input->input_ids = torch::from_blob(const_cast<int*>(vec.data()), {(int64_t)vec.size()}, torch::kInt32).clone();
 
