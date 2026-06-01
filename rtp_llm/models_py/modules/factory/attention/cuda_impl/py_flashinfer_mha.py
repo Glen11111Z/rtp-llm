@@ -113,11 +113,14 @@ class PyFlashinferPrefillPagedAttnOp(object):
         forbid_realloc: True only when called from prepare_cuda_graph (replay); forbids buffer realloc.
         """
         check_attention_inputs(attn_inputs)
+        kv_cache_block_id_host = attn_inputs.kv_cache_kernel_block_id_host
+        if kv_cache_block_id_host is None:
+            kv_cache_block_id_host = torch.empty(0, dtype=torch.int32)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id_host,
+            kv_cache_block_id_host,
             self.page_size,
             forbid_realloc,
         )
@@ -354,11 +357,14 @@ class PyFlashinferPrefillAttnOp(object):
         batch_size = attn_inputs.input_lengths.size(0)
         cu_seqlens = attn_inputs.cu_seqlens[: batch_size + 1]
 
+        kv_cache_block_id_host = attn_inputs.kv_cache_kernel_block_id_host
+        if kv_cache_block_id_host is None:
+            kv_cache_block_id_host = torch.empty(0, dtype=torch.int32)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id_host,
+            kv_cache_block_id_host,
             self.page_size,
         )
 
@@ -676,11 +682,14 @@ class PyFlashinferDecodeAttnOp(object):
         else:  # BASE
             kv_datatype = get_scalar_type(attn_inputs.dtype)
 
+        kv_cache_block_id_host = attn_inputs.kv_cache_kernel_block_id_host
+        if kv_cache_block_id_host is None:
+            kv_cache_block_id_host = torch.empty(0, dtype=torch.int32)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id_host,
+            kv_cache_block_id_host,
             self.seq_size_per_block,
             forbid_realloc=forbid_realloc,
         )
@@ -725,11 +734,14 @@ class PyFlashinferDecodeAttnOp(object):
         buffers in-place via fill_params — the pre-allocated buffers are already
         wired into the decode_wrapper from the initial prepare() call.
         """
+        kv_cache_block_id_host = attn_inputs.kv_cache_kernel_block_id_host
+        if kv_cache_block_id_host is None:
+            kv_cache_block_id_host = torch.empty(0, dtype=torch.int32)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id_host,
+            kv_cache_block_id_host,
             self.seq_size_per_block,
             forbid_realloc=True,
         )
