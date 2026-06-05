@@ -1,5 +1,6 @@
 #include "rtp_llm/cpp/models/Sampler.h"
 #include <cstring>
+#include <cmath>
 #include "rtp_llm/cpp/utils/DebugUtils.h"
 #include "rtp_llm/cpp/models/logits_processor/BaseLogitsProcessor.h"
 #include "rtp_llm/cpp/models/logits_processor/LogitsProcessorStates.h"
@@ -27,14 +28,15 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         return t.defined() ? std::optional<torch::Tensor>(t.narrow(0, offset, size)) : std::nullopt;
     };
 
-    preprocessLogits(inputs);
-
     uint64_t max_seq_len   = inputs.token_ids.size(1);
     auto     num_beams_in  = inputs.num_beams_in.data_ptr<int64_t>();
     auto     num_beams_out = inputs.num_beams_out.data_ptr<int64_t>();
 
     bool has_num_beams = std::any_of(num_beams_in, num_beams_in + inputs.batch_size, [](auto n) { return n > 1; })
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
+
+    preprocessLogits(inputs);
+
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
 
     // allocate output tensors
@@ -189,6 +191,47 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                 cum_log_probs_out_reshaped.copy_(output.cum_log_probs);
             }
             beam_indices.reshape({(int64_t)beam_batch_size, (int64_t)cur_num_beams_out}).copy_(output.beam_indices);
+
+            // =================================================================
+            // Solution 3: Branch factor compensation for constraint decoding.
+            // Adds +log(branch_factor) to cum_log_probs to compensate for the
+            // probability concentration caused by smaller constraint sets.
+            //
+            // When a beam has fewer allowed tokens (smaller branch_factor),
+            // the masked softmax artificially inflates each token's probability.
+            // Adding log(branch_factor) normalizes this bias so beams with
+            // different constraint set sizes are comparable.
+            // =================================================================
+            if (inputs.branch_factors.defined() && cum_log_probs_out_reshaped.defined()) {
+                // branch_factors: [total_batch_size], dtype int32
+                auto bf_slice = inputs.branch_factors.narrow(0, from_batch_idx_in, batch_size_in);
+                auto* bf_ptr = bf_slice.data_ptr<int32_t>();
+
+                // beam_indices: [beam_batch_size, cur_num_beams_out], tells us which src beam each output came from
+                auto beam_indices_cpu = output.beam_indices.cpu();
+                auto* bi_ptr = beam_indices_cpu.data_ptr<int32_t>();
+
+                auto* clp_ptr = cum_log_probs_out_reshaped.data_ptr<float>();
+                for (size_t batch_idx = 0; batch_idx < beam_batch_size; ++batch_idx) {
+                    for (size_t beam_idx = 0; beam_idx < (size_t)cur_num_beams_out; ++beam_idx) {
+                        const size_t out_offset = batch_idx * cur_num_beams_out + beam_idx;
+                        // Skip invalid beams
+                        if (clp_ptr[out_offset] <= -FLT_MAX / 2) continue;
+
+                        // Get source beam index within this batch item
+                        int src_beam = bi_ptr[out_offset];
+                        // Global index into branch_factors for the source beam
+                        size_t src_global = batch_idx * cur_num_beams_in + src_beam;
+                        int bf = bf_ptr[src_global];
+
+                        // Apply compensation: +log(branch_factor)
+                        // bf <= 1 means no constraint or single path, no compensation needed
+                        if (bf > 1) {
+                            clp_ptr[out_offset] += std::log(static_cast<float>(bf));
+                        }
+                    }
+                }
+            }
  
             // Filter out beams with -inf cum_log_probs (produced by constrained decoding masks).
             // For each batch item, compact valid beams to the front and update beam count.

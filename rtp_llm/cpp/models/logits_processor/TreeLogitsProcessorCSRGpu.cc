@@ -103,6 +103,45 @@ void TreeLogitsProcessorCSR::process(const SamplerInputs& inputs, size_t start_i
 #endif
 
     maskLogits(batch_logits, d_mask_out);
+
+    // =========================================================================
+    // Compute branch factors for each beam (used by Sampler for score compensation).
+    // branch_factor = number of valid tokens at the beam's current CSR state.
+    // This is done on CPU using the CSR indptr and state mirrors (negligible cost).
+    // =========================================================================
+    {
+        const auto& indptr = ref_info->csr_index->indptr;
+        const auto& start_mask = ref_info->csr_index->start_mask;
+
+        // Lazily allocate or reuse branch_factors tensor in SamplerInputs
+        if (!inputs.branch_factors.defined()
+            || inputs.branch_factors.size(0) < static_cast<int64_t>(start_idx + batch_size)) {
+            inputs.branch_factors = torch::zeros(
+                {static_cast<int64_t>(inputs.logits.size(0))}, torch::kInt32);
+        }
+        auto* bf_ptr = inputs.branch_factors.data_ptr<int32_t>();
+
+        for (size_t i = 0; i < batch_size; ++i) {
+            if (!tree_infos_[i].in_tree_mode) {
+                bf_ptr[start_idx + i] = 0;  // not in constraint mode
+                continue;
+            }
+            int state = tree_infos_[i].current_state;
+            int branch_factor = 0;
+            if (state == 0) {
+                // Root state: count set bits in start_mask
+                for (size_t j = 0; j < start_mask.size(); ++j) {
+                    if (start_mask[j]) ++branch_factor;
+                }
+            } else {
+                // Non-root: branch_factor = indptr[state+1] - indptr[state]
+                if (state + 1 < static_cast<int>(indptr.size())) {
+                    branch_factor = indptr[state + 1] - indptr[state];
+                }
+            }
+            bf_ptr[start_idx + i] = std::max(branch_factor, 1);  // avoid log(0)
+        }
+    }
 }
 
 // =============================================================================

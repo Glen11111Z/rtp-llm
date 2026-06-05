@@ -54,6 +54,10 @@ public:
     mutable torch::Tensor cum_log_probs;  // shape: [batch_size]
     mutable torch::Tensor all_probs;      // shape: [batch_size, vocab_size]
 
+    // Branch factors per beam for constraint decoding score compensation.
+    // Filled by CSR logits processor during process(); shape: [batch_size]
+    mutable torch::Tensor branch_factors;  // shape: [batch_size], dtype: int32
+
     std::vector<at::Generator> generator;
 };
 
