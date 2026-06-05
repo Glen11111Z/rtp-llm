@@ -1,5 +1,6 @@
 #include "rtp_llm/cpp/models/Sampler.h"
 #include <cstring>
+#include <cmath>
 #include "rtp_llm/cpp/utils/DebugUtils.h"
 #include "rtp_llm/cpp/models/logits_processor/BaseLogitsProcessor.h"
 #include "rtp_llm/cpp/models/logits_processor/LogitsProcessorStates.h"
@@ -27,14 +28,32 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         return t.defined() ? std::optional<torch::Tensor>(t.narrow(0, offset, size)) : std::nullopt;
     };
 
-    preprocessLogits(inputs);
-
+    // =========================================================================
+    // Score correction for constraint decoding:
+    // Save full-vocab log_softmax BEFORE constraint masking so we can correct
+    // cum_log_probs after beam search to reflect the model's true preference
+    // rather than the biased probability caused by different constraint set sizes.
+    // =========================================================================
     uint64_t max_seq_len   = inputs.token_ids.size(1);
     auto     num_beams_in  = inputs.num_beams_in.data_ptr<int64_t>();
     auto     num_beams_out = inputs.num_beams_out.data_ptr<int64_t>();
 
     bool has_num_beams = std::any_of(num_beams_in, num_beams_in + inputs.batch_size, [](auto n) { return n > 1; })
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
+
+    torch::Tensor full_log_softmax_saved;  // [batch_size, vocab_size] on CUDA
+    if (has_num_beams && inputs.logits_processor_states_ptr != nullptr) {
+        full_log_softmax_saved = at::log_softmax(inputs.logits.to(torch::kCUDA), -1);
+    }
+
+    preprocessLogits(inputs);
+
+    // After masking: compute masked log_softmax for delta correction
+    torch::Tensor masked_log_softmax_saved;  // [batch_size, vocab_size] on CUDA
+    if (full_log_softmax_saved.defined()) {
+        masked_log_softmax_saved = at::log_softmax(inputs.logits.to(torch::kCUDA), -1);
+    }
+
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
 
     // allocate output tensors
@@ -189,6 +208,49 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                 cum_log_probs_out_reshaped.copy_(output.cum_log_probs);
             }
             beam_indices.reshape({(int64_t)beam_batch_size, (int64_t)cur_num_beams_out}).copy_(output.beam_indices);
+
+            // =================================================================
+            // Score correction: replace masked log_prob contribution with full-vocab log_prob
+            // for unbiased ranking under constraint decoding.
+            //
+            // delta[beam] = full_log_softmax[src_beam][token] - masked_log_softmax[src_beam][token]
+            // corrected_cum_log_probs[beam] = output.cum_log_probs[beam] + delta
+            // =================================================================
+            if (full_log_softmax_saved.defined() && output.new_token_ids.defined()
+                && cum_log_probs_out_reshaped.defined()) {
+                const int64_t vocab_size_val = static_cast<int64_t>(inputs.logits.size(1));
+
+                // Slice saved log_softmax tensors for this batch range [batch_size_in, vocab]
+                auto full_lsp_flat = full_log_softmax_saved.narrow(0, from_batch_idx_in, batch_size_in);
+                auto masked_lsp_flat = masked_log_softmax_saved.narrow(0, from_batch_idx_in, batch_size_in);
+
+                // Compute flat source indices: flat_src[b][i] = b * beams_in + beam_src[b][i]
+                auto beam_src_gpu = output.beam_indices;  // [beam_batch, beams_out] CUDA int32
+                auto batch_offsets = torch::arange((int64_t)beam_batch_size,
+                                                   torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA))
+                                         * (int32_t)cur_num_beams_in;
+                auto flat_src = (beam_src_gpu + batch_offsets.unsqueeze(1)).flatten().to(torch::kLong);
+
+                // Token indices
+                auto flat_tokens = output.new_token_ids.flatten().to(torch::kLong);  // [beam_batch*beams_out]
+
+                // Gather individual log_prob values using advanced indexing
+                auto full_values = full_lsp_flat.index({flat_src, flat_tokens});    // [beam_batch*beams_out]
+                auto masked_values = masked_lsp_flat.index({flat_src, flat_tokens}); // [beam_batch*beams_out]
+                auto delta = (full_values - masked_values).cpu();  // bring to CPU
+
+                // Apply correction to cum_log_probs_out (which is on CPU)
+                auto* delta_ptr = delta.data_ptr<float>();
+                auto* clp_ptr = cum_log_probs_out_reshaped.data_ptr<float>();
+                const size_t n_out = beam_batch_size * cur_num_beams_out;
+                for (size_t idx = 0; idx < n_out; ++idx) {
+                    // Skip beams with -inf scores (completely invalid paths)
+                    if (clp_ptr[idx] <= -FLT_MAX / 2) continue;
+                    // Skip if delta is nan/inf (can happen with -inf logits)
+                    if (!std::isfinite(delta_ptr[idx])) continue;
+                    clp_ptr[idx] += delta_ptr[idx];
+                }
+            }
  
             // Filter out beams with -inf cum_log_probs (produced by constrained decoding masks).
             // For each batch item, compact valid beams to the front and update beam count.

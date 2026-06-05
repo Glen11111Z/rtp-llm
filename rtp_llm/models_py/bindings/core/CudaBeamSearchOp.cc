@@ -143,7 +143,8 @@ BeamSearchOutput sampleBeamSearch(const BeamSearchParams& params) {
                              std::move(input_lengths_out),
                              std::move(sequence_lengths_out),
                              std::move(cum_log_probs_out),
-                             std::move(beam_indices)});
+                             std::move(beam_indices),
+                             std::move(output_ids)});
 
 #undef DISPATCH_TYPE
 #undef DISPATCH_BOOL

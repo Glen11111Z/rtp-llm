@@ -320,6 +320,7 @@ struct BeamSearchOutput {
     torch::Tensor sequence_lengths;  // [batch_size, num_beams_out]
     torch::Tensor cum_log_probs;     // [batch_size, num_beams_out]
     torch::Tensor beam_indices;      // [batch_size, num_beams_out]
+    torch::Tensor new_token_ids;     // [batch_size, num_beams_out] — newly selected token per beam
 };
 
 struct BroadcastParams {
