@@ -74,8 +74,15 @@ BeamSearchOutput sampleBeamSearch(const BeamSearchParams& params) {
 
     // compute log softmax for probability calculation
     // note the computation here is intentionally performed inplace to reduce memory usage
+    //
+    // When `params.logits_already_log_softmaxed` is true, `params.logits` is already a
+    // FULL-vocab log_softmax tensor (with -inf at masked positions) prepared by the caller.
+    // We skip the internal log_softmax to keep cross-beam Stage-C comparison unbiased
+    // under hard-mask logits processors (e.g. CSR constraint decoding).
     at::Tensor log_softmax_logits_tsr = params.logits;
-    at::log_softmax_out(log_softmax_logits_tsr, params.logits, -1);
+    if (!params.logits_already_log_softmaxed) {
+        at::log_softmax_out(log_softmax_logits_tsr, params.logits, -1);
+    }
 
     // beam search heuristic
     auto                           logits_dtype = torchDTypeToDataType(params.logits.dtype());
@@ -143,8 +150,7 @@ BeamSearchOutput sampleBeamSearch(const BeamSearchParams& params) {
                              std::move(input_lengths_out),
                              std::move(sequence_lengths_out),
                              std::move(cum_log_probs_out),
-                             std::move(beam_indices),
-                             std::move(output_ids)});
+                             std::move(beam_indices)});
 
 #undef DISPATCH_TYPE
 #undef DISPATCH_BOOL

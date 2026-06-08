@@ -312,6 +312,11 @@ struct BeamSearchParams {
     torch::Tensor  sequence_lengths;  // [batch_size, num_beams_in]
     torch::Tensor  cum_log_probs;     // [batch_size, num_beams_in]
     size_t         num_beams_out = 0;
+    // When true, `logits` is already log_softmax-normalized over the FULL vocabulary
+    // (with -inf at masked positions). The kernel will skip its internal log_softmax,
+    // so cross-beam Stage-C comparison uses LSE_full as the shared denominator and
+    // is unbiased under hard-mask logits processors (e.g. CSR / no_repeat_ngram).
+    bool           logits_already_log_softmaxed = false;
 };
 
 struct BeamSearchOutput {
@@ -320,7 +325,6 @@ struct BeamSearchOutput {
     torch::Tensor sequence_lengths;  // [batch_size, num_beams_out]
     torch::Tensor cum_log_probs;     // [batch_size, num_beams_out]
     torch::Tensor beam_indices;      // [batch_size, num_beams_out]
-    torch::Tensor new_token_ids;     // [batch_size, num_beams_out] — newly selected token per beam
 };
 
 struct BroadcastParams {
