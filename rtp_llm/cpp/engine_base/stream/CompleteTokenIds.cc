@@ -176,6 +176,13 @@ bool CompleteTokenIds::update(const torch::Tensor& new_tokens,
         }
     };
 
+    RTP_LLM_LOG_WARNING("[PAD_DEBUG] CompleteTokenIds::update: new_batch_size=%d, batch_size_=%d, "
+                        "common_len_=%d, seq_length_=%d, num_new_tokens=%d, is_beam_search=%d, "
+                        "max_num_new_tokens=%ld, max_batch_size_=%d",
+                        new_batch_size, batch_size_, common_len_, seq_length_,
+                        num_new_tokens, (int)is_beam_search,
+                        (long)max_num_new_tokens, max_batch_size_);
+
     for (size_t i = 0; i < new_batch_size; ++i) {
         for (size_t j = 0; j < num_new_tokens; ++j) {
             auto current_token_id = get_new_token_id(i, j);
@@ -185,6 +192,14 @@ bool CompleteTokenIds::update(const torch::Tensor& new_tokens,
             }
         }
         if (is_beam_search) {
+            // Log the first generated token position for each beam to detect pad corruption
+            int first_gen_token_in_src = *(new_tokens_ptr + i * max_num_new_tokens + common_len_);
+            int first_gen_token_in_dst = *(data(i) + common_len_);
+            if (i > 0 || new_batch_size != batch_size_) {
+                RTP_LLM_LOG_WARNING("[PAD_DEBUG]   beam[%zu] memcpy from common_len_=%d: "
+                                    "src_token_at_common_len=%d, dst_token_before_copy=%d",
+                                    i, common_len_, first_gen_token_in_src, first_gen_token_in_dst);
+            }
             memcpy(data(i) + common_len_,
                    new_tokens_ptr + i * max_num_new_tokens + common_len_,
                    sizeof(int) * (max_num_new_tokens - common_len_));
@@ -217,6 +232,9 @@ void CompleteTokenIds::setSeqLength(int seq_length) {
     seq_length_ = seq_length;
 
     if (batch_size_ == 1) {  // reset common len
+        RTP_LLM_LOG_WARNING("[PAD_DEBUG] setSeqLength: batch_size_==1, updating common_len_ from %d to %d "
+                            "(max_batch_size_=%d, seq_length_=%d)",
+                            common_len_, seq_length_, max_batch_size_, seq_length_);
         common_len_ = seq_length_;
     }
 }
