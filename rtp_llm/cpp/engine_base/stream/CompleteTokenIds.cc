@@ -231,10 +231,7 @@ void CompleteTokenIds::setSeqLength(int seq_length) {
     }
     seq_length_ = seq_length;
 
-    if (batch_size_ == 1) {  // reset common len
-        RTP_LLM_LOG_WARNING("[PAD_DEBUG] setSeqLength: batch_size_==1, updating common_len_ from %d to %d "
-                            "(max_batch_size_=%d, seq_length_=%d)",
-                            common_len_, seq_length_, max_batch_size_, seq_length_);
+    if (batch_size_ == 1 && max_batch_size_ == 1) {  // reset common len only in true single-batch mode
         common_len_ = seq_length_;
     }
 }
