@@ -259,10 +259,6 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                 if (valid_beam_count == 0) {
                     valid_beam_count = 1;
                 }
-                RTP_LLM_LOG_WARNING("[PAD_DEBUG] Sampler: batch_idx=%zu, valid_beam_count=%zu / %zu, "
-                                    "cur_num_beams_in=%zu, from_batch_idx_out=%zu",
-                                    batch_idx, valid_beam_count, cur_num_beams_out,
-                                    cur_num_beams_in, from_batch_idx_out);
                 for (size_t out_idx = 0; out_idx < cur_num_beams_out; ++out_idx) {
                     size_t global_out_idx = from_batch_idx_out + batch_idx * cur_num_beams_out + out_idx;
                     effective_beam_sizes[global_out_idx] = valid_beam_count;

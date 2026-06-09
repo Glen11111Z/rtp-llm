@@ -191,19 +191,12 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
         auto it = sampler_output.effective_beam_sizes.find((size_t)batch_idx_out);
         if (it != sampler_output.effective_beam_sizes.end()) {
             int effective_size = it->second;
-            RTP_LLM_LOG_WARNING("[PAD_DEBUG] NormalOutputDispatcher: stream[%ld] "
-                                "effective_size=%d, next_batch_size=%zu, "
-                                "currentBatchSize=%d, batch_idx_out=%d",
-                                stream->streamId(), effective_size, next_batch_size,
-                                stream->currentBatchSize(), batch_idx_out);
             stream->setEffectiveBeamSize(effective_size);
 
             // After setEffectiveBeamSize, currentBatchSize()/nextBatchSize() return
             // the reduced value. Truncate buffers passed to update() so that
             // CompleteTokenIds and updateKvCacheBlocks operate on the reduced batch.
             if (has_beam_search && effective_size < (int)next_batch_size) {
-                RTP_LLM_LOG_WARNING("[PAD_DEBUG]   truncating buffers from %zu to %d",
-                                    next_batch_size, effective_size);
                 batch_new_all_token_ids = new_all_token_ids.slice(0, batch_idx_out, batch_idx_out + effective_size);
                 src_batch_indices       = sampler_output.beam_index.slice(0, batch_idx_out, batch_idx_out + effective_size);
                 new_tokens              = new_tokens_all.slice(0, batch_idx_out, batch_idx_out + effective_size);
