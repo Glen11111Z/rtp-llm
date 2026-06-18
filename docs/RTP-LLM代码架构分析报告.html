@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RTP-LLM 代码架构全面分析报告</title>
+<style>
+:root {
+    --primary: #2563eb; --primary-light: #dbeafe;
+    --green: #16a34a; --green-light: #dcfce7;
+    --orange: #d97706; --orange-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2;
+    --purple: #7c3aed; --purple-light: #ede9fe;
+    --cyan: #0891b2; --cyan-light: #cffafe;
+    --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
+    --gray-600: #4b5563; --gray-700: #374151; --gray-900: #111827;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height:1.7; color:var(--gray-900); background:var(--gray-50); }
+.container { max-width:1200px; margin:0 auto; padding:2rem; }
+h1 { font-size:2.2rem; color:var(--primary); border-bottom:3px solid var(--primary); padding-bottom:.5rem; margin-bottom:.5rem; }
+.subtitle { color:var(--gray-600); margin-bottom:2rem; font-size:.95rem; }
+h2 { font-size:1.6rem; margin:2.5rem 0 1rem; color:var(--gray-900); padding-left:.75rem; border-left:4px solid var(--primary); }
+h3 { font-size:1.25rem; margin:1.5rem 0 .75rem; color:var(--gray-700); }
+h4 { font-size:1.05rem; margin:1rem 0 .5rem; color:var(--gray-700); }
+p { margin-bottom:.8rem; }
+code { background:var(--gray-200); padding:.15em .4em; border-radius:3px; font-size:.88em; font-family:'JetBrains Mono','Fira Code',monospace; }
+pre { background:#1e293b; color:#e2e8f0; padding:1.2rem; border-radius:8px; overflow-x:auto; margin:1rem 0; font-size:.82rem; line-height:1.5; }
+pre code { background:none; padding:0; color:inherit; }
+.card { background:white; border-radius:10px; padding:1.25rem; margin:.8rem 0; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.card-blue { border-left:4px solid var(--primary); }
+.card-green { border-left:4px solid var(--green); }
+.card-orange { border-left:4px solid var(--orange); }
+.card-red { border-left:4px solid var(--red); }
+.card-purple { border-left:4px solid var(--purple); }
+.card-cyan { border-left:4px solid var(--cyan); }
+.badge { display:inline-block; padding:.15em .5em; border-radius:4px; font-size:.78rem; font-weight:600; margin-right:.4rem; vertical-align:middle; }
+.badge-blue { background:var(--primary-light); color:var(--primary); }
+.badge-green { background:var(--green-light); color:var(--green); }
+.badge-orange { background:var(--orange-light); color:var(--orange); }
+.badge-purple { background:var(--purple-light); color:var(--purple); }
+.badge-cyan { background:var(--cyan-light); color:var(--cyan); }
+.badge-red { background:var(--red-light); color:var(--red); }
+table { width:100%; border-collapse:collapse; margin:.8rem 0; font-size:.88rem; }
+th,td { border:1px solid var(--gray-200); padding:.6rem .8rem; text-align:left; }
+th { background:var(--gray-100); font-weight:600; }
+tr:nth-child(even) { background:var(--gray-50); }
+.diagram { background:white; border:1px solid var(--gray-200); border-radius:8px; padding:1.2rem; margin:1rem 0; text-align:center; font-family:monospace; font-size:.82rem; line-height:1.7; white-space:pre; overflow-x:auto; }
+ul,ol { margin:.4rem 0 .8rem 1.5rem; }
+li { margin-bottom:.3rem; }
+.toc { background:white; border:1px solid var(--gray-200); border-radius:8px; padding:1.5rem; margin:1.5rem 0; }
+.toc a { color:var(--primary); text-decoration:none; }
+.toc a:hover { text-decoration:underline; }
+.toc ul { list-style:none; margin:0; padding:0; }
+.toc li { margin:.35rem 0; padding-left:.8rem; }
+.toc li li { padding-left:1.5rem; font-size:.93rem; }
+.toc li li li { padding-left:2rem; font-size:.9rem; }
+.stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.8rem; margin:1rem 0; }
+.stat-card { background:white; border-radius:8px; padding:1rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.stat-value { font-size:1.8rem; font-weight:700; color:var(--primary); }
+.stat-label { font-size:.85rem; color:var(--gray-600); }
+.file-tree { font-family:monospace; font-size:.85rem; line-height:1.6; background:white; padding:1rem; border-radius:8px; border:1px solid var(--gray-200); margin:.8rem 0; overflow-x:auto; }
+.file-tree .dir { color:var(--primary); font-weight:600; }
+.file-tree .desc { color:var(--gray-600); font-style:italic; }
+@media(max-width:768px){ body{font-size:.95rem;} .container{padding:1rem;} h1{font-size:1.6rem;} .stats-grid{grid-template-columns:1fr 1fr;} }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>RTP-LLM 代码架构全面分析报告</h1>
+<p class="subtitle">
+    仓库路径: <code>/home/yehongzhen.yhz/RTP-LLM/github-opensource</code> &mdash; 分析日期: 2026-06-09<br>
+    版本: 0.2.0 | 语言: C++17 / CUDA / Python 3.10 | 构建系统: Bazel
+</p>
+
+<div class="stats-grid">
+    <div class="stat-card"><div class="stat-value">576</div><div class="stat-label">C++ 源文件 (.h/.cc)</div></div>
+    <div class="stat-card"><div class="stat-value">577</div><div class="stat-label">Python 源文件 (.py)</div></div>
+    <div class="stat-card"><div class="stat-value">33K+</div><div class="stat-label">C++ 代码行数</div></div>
+    <div class="stat-card"><div class="stat-value">45+</div><div class="stat-label">支持模型数</div></div>
+</div>
+
+<div class="toc">
+<strong>目录</strong>
+<ul>
+    <li><a href="#s1">1. 项目概览与总体架构</a></li>
+    <li><a href="#s2">2. 进程模型与启动流程</a>
+        <ul>
+            <li><a href="#s2">2.1 为什么采用多进程架构（GIL 隔离、故障隔离、PD 分离等）</a></li>
+        </ul>
+    </li>
+    <li><a href="#s3">3. 推理请求全链路流程</a></li>
+    <li><a href="#s4">4. Python 层详解</a>
+        <ul>
+            <li><a href="#s4-1">4.1 服务入口与启动</a></li>
+            <li><a href="#s4-2">4.2 前端服务 (Frontend)</a></li>
+            <li><a href="#s4-3">4.3 OpenAI 兼容层</a></li>
+            <li><a href="#s4-4">4.4 模型注册与配置</a></li>
+            <li><a href="#s4-5">4.5 权重加载 (Model Loader)</a></li>
+            <li><a href="#s4-6">4.6 Pipeline API</a></li>
+        </ul>
+    </li>
+    <li><a href="#s5">5. C++ 引擎核心详解</a>
+        <ul>
+            <li><a href="#s5-1">5.1 引擎基础层 (engine_base)</a></li>
+            <li><a href="#s5-2">5.2 NormalEngine 与执行管线</a></li>
+            <li><a href="#s5-3">5.3 调度器 (Scheduler)</a></li>
+            <li><a href="#s5-4">5.4 Stream 与生成状态管理</a>
+                <ul>
+                    <li><a href="#s5-4">GenerateStream vs StreamGroups 两层抽象设计原理</a></li>
+                    <li><a href="#s5-4">Context/Decode 分类原因与 Attention 复杂度分析 (O(n) vs O(n&sup2;))</a></li>
+                </ul>
+            </li>
+            <li><a href="#s5-5">5.5 Sampler 与采样策略</a></li>
+            <li><a href="#s5-6">5.6 Logits Processor 与限制性解码</a></li>
+        </ul>
+    </li>
+    <li><a href="#s6">6. KV Cache 系统</a></li>
+    <li><a href="#s7">7. CUDA Kernel 与计算后端</a></li>
+    <li><a href="#s8">8. 高级特性</a>
+        <ul>
+            <li><a href="#s8-1">8.1 推测性解码 (Speculative Decoding)</a></li>
+            <li><a href="#s8-2">8.2 Prefill/Decode 分离 (Disaggregation)</a></li>
+            <li><a href="#s8-3">8.3 CUDA Graph</a></li>
+            <li><a href="#s8-4">8.4 多模态处理</a></li>
+            <li><a href="#s8-5">8.5 LoRA 多适配器</a></li>
+            <li><a href="#s8-6">8.6 分布式 (Tensor Parallelism)</a></li>
+        </ul>
+    </li>
+    <li><a href="#s9">9. PyBind 层 — C++ 与 Python 的桥梁</a></li>
+    <li><a href="#s10">10. C++ API Server</a></li>
+    <li><a href="#s11">11. Model RPC 服务</a></li>
+    <li><a href="#s12">12. Python 模型执行框架 (models_py)</a></li>
+    <li><a href="#s13">13. 构建系统与平台支持</a></li>
+    <li><a href="#s14">14. 目录结构全景与文件索引</a></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. 项目概览与总体架构</h2>
+
+<p>RTP-LLM 是阿里巴巴开发的高性能 LLM 推理引擎，部署于淘宝、天猫、菜鸟、高德、饿了么、Lazada 等业务线。项目以 C++ 为核心推理引擎，Python 为前端服务和模型定义层，CUDA 为 GPU 计算后端。</p>
+
+<div class="diagram">
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          RTP-LLM 总体架构                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    HTTP 客户端 (curl / SDK / Browser)                     │   │
+│  └────────────────────────────────┬─────────────────────────────────────────┘   │
+│                                   │                                             │
+│  ┌────────────────────────────────▼─────────────────────────────────────────┐   │
+│  │              Frontend Process (FastAPI / uvicorn)                         │   │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐                  │   │
+│  │  │ OpenAI API  │  │ Tokenizer    │  │ Chat Renderer  │                  │   │
+│  │  │ /v1/chat    │  │ Factory      │  │ (per-model)    │                  │   │
+│  │  └──────┬──────┘  └──────────────┘  └────────────────┘                  │   │
+│  └─────────┼───────────────────────────────────────────────────────────────┘   │
+│            │ gRPC / SharedMemory                                                │
+│  ┌─────────▼───────────────────────────────────────────────────────────────┐   │
+│  │              Backend Process (C++ Engine via pybind11)                    │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────────────────┐        │   │
+│  │  │ NormalEngine │  │ FIFOScheduler│  │ NormalExecutor            │        │   │
+│  │  │  (主引擎)    │  │  (调度器)    │  │  ┌─────────┐ ┌─────────┐ │        │   │
+│  │  └──────┬──────┘  └──────┬──────┘  │  │ Model   │ │ Sampler │ │        │   │
+│  │         │                │         │  │ Forward │ │ (采样)  │ │        │   │
+│  │         │                │         │  └────┬────┘ └────┬────┘ │        │   │
+│  │         │                │         └───────┼───────────┼──────┘        │   │
+│  │         │                │                 │           │               │   │
+│  │  ┌──────▼──────┐  ┌─────▼─────────────────▼───────────▼──────────┐    │   │
+│  │  │ KVCache     │  │           CUDA Kernels                        │    │   │
+│  │  │ Manager     │  │  Attention │ GEMM │ Sampling │ FlashInfer    │    │   │
+│  │  │ (Paged)     │  │  CUTLASS   │ cuBLAS│ BeamSearch│ DeepGEMM    │    │   │
+│  │  └─────────────┘  └──────────────────────────────────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                    GPU Memory (HBM)                                       │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐    │   │
+│  │  │ Model Weights│  │ KV Cache     │  │ Activation / Workspace       │    │   │
+│  │  │ (FP16/INT8/  │  │ Blocks       │  │                              │    │   │
+│  │  │  FP8/INT4)   │  │ (Paged Attn) │  │                              │    │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. 进程模型与启动流程</h2>
+
+<div class="card card-blue">
+<h4>进程架构</h4>
+<p>RTP-LLM 使用 <code>multiprocessing.spawn</code> 创建两类进程：</p>
+<ul>
+    <li><strong>Backend Process</strong>：加载模型权重，运行 C++ 推理引擎（通过 pybind11 绑定），处理实际的推理计算</li>
+    <li><strong>Frontend Process(es)</strong>：运行 FastAPI/uvicorn HTTP 服务，处理请求解析、Tokenize、OpenAI 协议转换等</li>
+</ul>
+</div>
+
+<h3>为什么采用多进程架构</h3>
+
+<div class="card card-purple">
+<h4>1. GIL 隔离 — 最根本的原因</h4>
+<p>Backend 进程通过 pybind11 调用 C++ 引擎（<code>libth_transformer.so</code>），涉及大量 PyTorch 张量操作和 CUDA 内核调度。Frontend 进程运行 FastAPI/uvicorn 异步 HTTP 服务器，大量使用 Python <code>asyncio</code>。</p>
+<p>如果放在同一进程，Python GIL 会导致：C++ 端释放 GIL 做 CUDA 计算时没问题，但<strong>模型加载、权重初始化、Python 侧 tensor 操作</strong>会长时间持有 GIL，阻塞所有 HTTP 请求处理；asyncio 事件循环在等待 GIL 时无法处理新连接，导致健康检查超时、请求排队。</p>
+</div>
+
+<div class="card card-green">
+<h4>2. 故障隔离</h4>
+<p><code>ProcessManager</code>（<code>start_server.py:209-245</code>）独立监控 backend 和 frontend 进程的健康状态。如果 Backend 因 OOM、CUDA error、coredump 崩溃，Frontend 进程仍然存活，可以返回 503 而不是整个服务直接消失。反之 Frontend 挂了，GPU 上的模型状态不受影响，可以重新拉起 Frontend。</p>
+</div>
+
+<div class="card card-orange">
+<h4>3. 独立的生命周期与启动时序</h4>
+<p>Backend 启动非常慢（加载几十 GB 权重到 GPU、初始化 NCCL、JIT 编译 kernel），而 Frontend 启动很快。Frontend 在 uvicorn 启动后通过 <code>_wait_backend_health_ready_impl()</code>（<code>frontend_app.py:94-120</code>）轮询 Backend 的 gRPC health_check。这样 k8s 的 liveness probe（<code>/frontend_health</code>）可以在 Backend 还没 ready 时就返回，避免 Pod 被杀。</p>
+</div>
+
+<div class="card card-cyan">
+<h4>4. 多 Frontend 水平扩展</h4>
+<p>Frontend 可以启动多个实例（<code>frontend_server_count</code>，<code>start_server.py:129-134</code>），共用同一个 Backend。HTTP 解析、tokenize、OpenAI 协议转换都是 CPU 密集的 Python 工作，多个 Frontend 进程可以利用多核并行处理请求，而 Backend 只需要一个进程持有 GPU。</p>
+</div>
+
+<div class="card card-red">
+<h4>5. PD 分离（Prefill/Decode Disaggregation）支持</h4>
+<p><code>start_server.py:217</code> 的 <code>RoleType.FRONTEND</code> 判断说明 Frontend 和 Backend 可以部署在<strong>不同机器</strong>上。在 PD 分离架构中，Prefill 节点和 Decode 节点是不同的 Backend 进程，Frontend 作为独立角色，通过 gRPC 路由请求到不同的 Backend。</p>
+</div>
+
+<div class="card card-blue">
+<h4>6. 为什么用 spawn 而不是 fork</h4>
+<p><code>start_server.py:196</code> 显式设置 <code>multiprocessing.set_start_method("spawn")</code>。CUDA runtime 不支持 <code>fork</code>——如果父进程已初始化 CUDA context，<code>fork</code> 出的子进程会继承损坏的 CUDA 状态，导致不可预测的崩溃。<code>spawn</code> 创建全新的进程，确保每个进程独立初始化自己的 CUDA context。</p>
+</div>
+
+<p><strong>总结</strong>：这个设计本质是<strong>关注点分离 + 资源隔离</strong>。GPU 推理和 HTTP 服务是两种完全不同的工作负载（一个 GPU-bound + C++ 密集，一个 IO-bound + Python asyncio），放在独立进程中各自可以用最合适的并发模型，互不干扰，且支持独立扩缩和故障恢复。</p>
+
+<div class="diagram">
+启动流程：
+
+main() ──→ setup_args() ──→ setup_and_configure_server() ──→ start_server()
+                                                                    │
+                              ┌─────────────────────────────────────┤
+                              │                                     │
+                              ▼                                     ▼
+                   start_backend_server_impl()           start_frontend_server_impl()
+                              │                                     │
+                    multiprocessing.Process                multiprocessing.Process
+                              │                                     │
+                              ▼                                     ▼
+                   local_rank_start()                     start_frontend_server()
+                              │                                     │
+                    BackendManager(py_env_configs)        FrontendServer(rank, id)
+                              │                                     │
+                    ┌─────────▼──────────┐               ┌─────────▼──────────┐
+                    │ DistributedServer  │               │ FastAPI app setup  │
+                    │ init_distributed   │               │ OpenAI endpoints   │
+                    │ ModelFactory       │               │ uvicorn.run()      │
+                    │ → NormalEngine     │               └────────────────────┘
+                    │ → RtpLLMOp.init() │
+                    └────────────────────┘
+</div>
+
+<h3>关键启动文件</h3>
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>start_server.py</code></td><td>主入口，<code>main()</code> 函数解析参数后启动 backend + frontend 进程</td></tr>
+<tr><td><code>start_backend_server.py</code></td><td>Backend 进程入口，设置 CUDA 设备、NCCL 通信、初始化 <code>BackendManager</code></td></tr>
+<tr><td><code>start_frontend_server.py</code></td><td>Frontend 进程入口，创建 <code>FrontendServer</code> 并启动 uvicorn</td></tr>
+<tr><td><code>server/backend_manager.py</code></td><td>Backend 管理器：创建 <code>EngineConfig</code>、<code>ModelConfig</code>，通过 <code>ModelFactory</code> 创建引擎</td></tr>
+<tr><td><code>model_factory.py</code></td><td>模型工厂：根据 HuggingFace config.json 查找模型类、创建权重加载器、构建引擎</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. 推理请求全链路流程</h2>
+
+<div class="diagram">
+用户请求 → HTTP (FastAPI)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. Frontend: 请求接收与预处理                                                  │
+│    FrontendServer.inference()                                                │
+│    → OpenaiEndpoint.chat_completion() (如果是 /v1/chat/completions)           │
+│    → ChatRenderer.render() — 将 messages 转为 prompt                         │
+│    → Tokenizer.encode() — 文本转 token IDs                                   │
+│    → FrontendWorker.inference_and_stream()                                    │
+│    → gRPC call to Backend                                                    │
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼──────────────────────────────────┐
+│ 2. Backend: RtpLLMOp / NormalEngine                                         │
+│    RpcServiceImpl.generate()                                                 │
+│    → NormalEngine.enqueue(GenerateInput)                                     │
+│    → 创建 GenerateStream（含 KV cache 资源、logits processor 等）               │
+│    → FIFOScheduler.enqueue(stream)                                           │
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼──────────────────────────────────┐
+│ 3. Scheduler: 调度与 Batching                                                │
+│    FIFOScheduler.schedule()                                                  │
+│    → 评估 waiting streams 的显存需求                                           │
+│    → 分配 KV cache blocks (KVCacheManager.malloc)                            │
+│    → 构建 StreamGroups (context streams + decode streams)                    │
+│    → 返回 list&lt;GenerateStreamPtr&gt; 给 Engine.step()                      │
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼──────────────────────────────────┐
+│ 4. Executor: 模型前向 + 采样                                                  │
+│    NormalExecutor.process(streams)                                            │
+│                                                                              │
+│    4a. NormalBatchStreamProcessor.gatherModelInput()                          │
+│        → NormalModelInputGatherer: 收集所有 stream 的 token_ids,              │
+│          attention_mask, position_ids 等，拼成一个大 batch                     │
+│                                                                              │
+│    4b. Model.forward(GptModelInputs) → GptModelOutputs                       │
+│        → Embedding → [TransformerLayer × N] → LM Head → logits              │
+│        → 使用 CUDA Graph (decode 阶段) 或直接执行                              │
+│                                                                              │
+│    4c. NormalBatchStreamProcessor.gatherSamplerInput()                        │
+│        → NormalSamplerInputGatherer: 从 model output 中提取 logits,           │
+│          拼接 beam search / sampling 参数                                     │
+│                                                                              │
+│    4d. Sampler.forward(SamplerInputs) → SamplerOutput                        │
+│        → preprocessLogits (logits processors: CSR mask, temperature, etc.)   │
+│        → 按 beam_size 分组：                                                  │
+│          • beam_size=1: execSampleGreedy (top-k, top-p, temperature)         │
+│          • beam_size>1: execSampleBeamSearch (TRT beam search kernel)        │
+│        → 过滤 -inf beams, 计算 effective_beam_sizes                          │
+│                                                                              │
+│    4e. NormalOutputDispatcher.dispatch(stream_groups, merged_output)          │
+│        → 将 sampler 输出分发回各 stream                                       │
+│        → stream.update() → CompleteTokenIds.update()                         │
+│        → updateLogitProcessorStatus() (CSR 状态推进)                          │
+│        → updateKvCacheBlocks() (KV block 重排)                               │
+│        → prepareGenerateOutput() → enqueue to output_queue                   │
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼──────────────────────────────────┐
+│ 5. Response: 输出返回                                                         │
+│    NormalGenerateStream.nextOutput()                                          │
+│    → 从 generate_outputs_queue_ 取出结果                                      │
+│    → gRPC response stream → Frontend                                         │
+│    → OpenaiEndpoint 格式化 → SSE stream / JSON response → HTTP 客户端         │
+└─────────────────────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. Python 层详解</h2>
+
+<h3 id="s4-1">4.1 服务入口与启动</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>rtp_llm/start_server.py</code></td><td><strong>总入口</strong>：<code>main()</code> → <code>setup_args()</code> 解析命令行/环境变量 → <code>start_server()</code> 启动 backend + frontend 进程。管理进程生命周期和健康检查</td></tr>
+<tr><td><code>rtp_llm/start_backend_server.py</code></td><td><strong>Backend 入口</strong>：<code>local_rank_start()</code> 设置 CUDA 设备、并行配置，创建 <code>BackendManager</code> 并进入 <code>serve_forever()</code> 循环</td></tr>
+<tr><td><code>rtp_llm/start_frontend_server.py</code></td><td><strong>Frontend 入口</strong>：创建 FastAPI app，注册路由，启动 uvicorn HTTP 服务</td></tr>
+<tr><td><code>rtp_llm/__init__.py</code></td><td>包初始化：导入 <code>rtp_llm.ops</code> 加载 C++ .so 库，条件导入内部模型</td></tr>
+</table>
+
+<h3 id="s4-2">4.2 前端服务 (Frontend)</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>frontend/frontend_server.py</code></td><td><strong>FrontendServer 类</strong>：初始化模型配置、创建 FrontendWorker/OpenaiEndpoint/EmbeddingEndpoint。提供 <code>inference()</code>、<code>chat_completion()</code> 等方法</td></tr>
+<tr><td><code>frontend/frontend_app.py</code></td><td>FastAPI 应用工厂：注册 HTTP 路由（<code>/v1/chat/completions</code>、<code>/v1/embeddings</code>、<code>/health</code> 等）</td></tr>
+<tr><td><code>frontend/frontend_worker.py</code></td><td><strong>FrontendWorker</strong>：封装推理调用，管理 tokenizer，负责 <code>inference_and_stream()</code> — 与 Backend gRPC 通信</td></tr>
+<tr><td><code>frontend/token_processor.py</code></td><td>Token 后处理：将 token IDs 转回文本，处理 stop words、special tokens 截断</td></tr>
+<tr><td><code>frontend/request_id_generator.py</code></td><td>生成唯一请求 ID</td></tr>
+<tr><td><code>frontend/tokenizer_factory/</code></td><td><strong>Tokenizer 工厂</strong>：按模型类型创建对应 tokenizer。支持 Qwen、ChatGLM、LLaMA、BERT、LLaVA 等</td></tr>
+</table>
+
+<h3 id="s4-3">4.3 OpenAI 兼容层</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>openai/openai_endpoint.py</code></td><td><strong>OpenaiEndpoint</strong>：实现 <code>/v1/chat/completions</code>、<code>/v1/completions</code> 端点，处理 SSE 流式输出</td></tr>
+<tr><td><code>openai/api_datatype.py</code></td><td>OpenAI API 数据类型定义（<code>ChatCompletionRequest</code>、<code>ChatCompletionResponse</code> 等 Pydantic 模型）</td></tr>
+<tr><td><code>openai/renderer_factory.py</code></td><td>Renderer 工厂：根据模型类型选择对应的 Chat Renderer（prompt 模板渲染器）</td></tr>
+<tr><td><code>openai/renderers/</code></td><td>各模型的 Chat 模板渲染器：<code>qwen_renderer.py</code>、<code>chatglm4_renderer.py</code>、<code>llama_template_renderer.py</code>、<code>deepseekv32_renderer.py</code> 等 20+ 个渲染器，负责将 OpenAI messages 格式转为模型原生 prompt 格式</td></tr>
+</table>
+
+<h3 id="s4-4">4.4 模型注册与配置</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>model_factory.py</code></td><td><strong>ModelFactory</strong>：静态方法集合 — <code>create_model_config()</code> 读取 HF config.json 构建 <code>ModelConfig</code>；<code>from_model_configs()</code> 创建完整引擎</td></tr>
+<tr><td><code>model_factory_register.py</code></td><td>模型注册表：<code>register_model()</code> 宏将 HF architecture 名映射到内部模型类（如 <code>QWenLMHeadModel → qwen</code>）</td></tr>
+<tr><td><code>models/__init__.py</code></td><td>导入所有模型定义文件，触发 <code>register_model</code> 调用</td></tr>
+<tr><td><code>models/llama.py</code></td><td>LLaMA 模型定义：配置 attention、FFN、vocab 等参数映射</td></tr>
+<tr><td><code>models/qwen_v3.py</code></td><td>Qwen3 模型定义：支持 MoE、Dense、MTP 等变体</td></tr>
+<tr><td><code>models/deepseek_v2.py</code></td><td>DeepSeek V2/V3 模型定义：MLA attention、MoE 路由</td></tr>
+<tr><td><code>config/model_config.py</code></td><td><strong>ModelConfig</strong> 数据类：模型维度、层数、量化配置等核心配置</td></tr>
+<tr><td><code>config/engine_config.py</code></td><td><strong>EngineConfig</strong>：引擎运行时配置（调度、并行度、KV cache 等模块配置的聚合）</td></tr>
+<tr><td><code>config/generate_config.py</code></td><td>生成配置：temperature、top_k、top_p、num_beams、stop words 等</td></tr>
+</table>
+
+<h3 id="s4-5">4.5 权重加载 (Model Loader)</h3>
+
+<div class="card card-green">
+<p><span class="badge badge-green">目录</span> <code>rtp_llm/model_loader/</code> — 31 个文件</p>
+<p>支持多种量化格式的权重加载，每种格式有独立的加载器：</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>量化格式</th></tr>
+<tr><td><code>loader.py</code></td><td>权重加载主入口，协调各格式加载器</td></tr>
+<tr><td><code>weight_manager.py</code></td><td>权重管理器：分片、拼接、TP 切分</td></tr>
+<tr><td><code>tensor_source.py</code></td><td>Tensor 数据源抽象（SafeTensors、PyTorch、bin 等文件格式）</td></tr>
+<tr><td><code>weight_only_quant_weight.py</code></td><td>INT8 Weight-Only 量化</td></tr>
+<tr><td><code>group_wise_quant_weight.py</code></td><td>INT4 GPTQ/AWQ 分组量化</td></tr>
+<tr><td><code>per_block_fp8_quant_weight.py</code></td><td>FP8 Per-Block 量化</td></tr>
+<tr><td><code>per_channel_fp8_quant_weight.py</code></td><td>FP8 Per-Channel 量化</td></tr>
+<tr><td><code>smooth_quant_weight.py</code></td><td>SmoothQuant INT8 量化</td></tr>
+<tr><td><code>mixed_fp4_quant_weight.py</code></td><td>FP4 混合精度量化</td></tr>
+<tr><td><code>attn_weight.py / ffn_weight.py</code></td><td>Attention / FFN 权重结构定义</td></tr>
+</table>
+
+<h3 id="s4-6">4.6 Pipeline API</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>pipeline/pipeline.py</code></td><td>Pipeline API：提供类似 HuggingFace <code>pipeline()</code> 的简化接口，自动管理模型加载、推理、输出</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. C++ 引擎核心详解</h2>
+
+<h3 id="s5-1">5.1 引擎基础层 (engine_base)</h3>
+
+<div class="card card-blue">
+<p><span class="badge badge-blue">目录</span> <code>rtp_llm/cpp/engine_base/</code> — 引擎抽象层，定义了核心接口和基类</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>EngineBase.h/.cc</code></td><td><strong>引擎基类</strong>：定义 <code>enqueue()</code>、<code>stop()</code>、<code>preRun()</code> 等纯虚接口。管理 <code>ResourceContext</code> 和 <code>SchedulerBase</code></td></tr>
+<tr><td><code>EngineInitParams.h</code></td><td>引擎初始化参数聚合：模型权重、各模块配置、并行度配置等</td></tr>
+<tr><td><code>Executor.h</code></td><td><strong>执行器基类</strong>：定义 <code>process(streams)</code> 接口。提供 <code>genModelDescription()</code> 静态方法生成模型描述符</td></tr>
+<tr><td><code>Host.h</code></td><td>Host 环境信息</td></tr>
+<tr><td><code>WeightsConverter.h</code></td><td>权重格式转换工具</td></tr>
+<tr><td><code>TorchProfiler.h</code></td><td>性能分析工具：Step 级 profiling 窗口</td></tr>
+</table>
+
+<h3 id="s5-2">5.2 NormalEngine 与执行管线</h3>
+
+<div class="card card-purple">
+<p><span class="badge badge-purple">目录</span> <code>rtp_llm/cpp/normal_engine/</code> — 主推理引擎实现</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>NormalEngine.h/.cc</code></td><td><strong>主引擎</strong>：继承 <code>EngineBase</code>。<code>startLoop()</code> 启动主循环线程 → <code>loop()</code> → 不断调用 <code>step()</code>。<code>step()</code> = <code>scheduler_->schedule()</code> + <code>executor_->process(streams)</code>。管理 warmup、system prompt、CUDA graph 等</td></tr>
+<tr><td><code>NormalExecutor.h/.cc</code></td><td><strong>执行器</strong>：<code>process()</code> 实现完整的 gather → model.forward → sample → dispatch 管线。持有 <code>Model</code>、<code>Sampler</code>、<code>BatchStreamProcessor</code></td></tr>
+<tr><td><code>NormalBatchStreamProcessor.h/.cc</code></td><td><strong>批处理协调器</strong>：协调三个子组件 — ModelInputGatherer、SamplerInputGatherer、OutputDispatcher。负责 logits processor 设置</td></tr>
+<tr><td><code>NormalModelInputGatherer.h/.cc</code></td><td><strong>模型输入收集器</strong>：从多个 stream 收集 token_ids、attention_mask、position_ids 等，拼成统一的 batch tensor（<code>GptModelInputs</code>）</td></tr>
+<tr><td><code>NormalSamplerInputGatherer.h/.cc</code></td><td><strong>采样输入收集器</strong>：从模型输出提取 logits，拼接 beam search 参数、cum_log_probs 等（<code>SamplerInputs</code>）</td></tr>
+<tr><td><code>NormalOutputDispatcher.h/.cc</code></td><td><strong>输出分发器</strong>：将 sampler 输出分发回各 stream。处理 beam search indices、cum_log_probs、effective_beam_sizes，调用 <code>stream.update()</code></td></tr>
+<tr><td><code>NormalGenerateStream.h/.cc</code></td><td><strong>生成流</strong>：继承 <code>GenerateStream</code>。实现 <code>prepareGenerateOutput()</code> 构造用户可见输出；管理 <code>generate_outputs_queue_</code> 输出队列</td></tr>
+</table>
+
+<h3 id="s5-3">5.3 调度器 (Scheduler)</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>engine_base/schedulers/SchedulerBase.h</code></td><td>调度器基类：定义 <code>enqueue()</code>、<code>schedule()</code>、<code>stop()</code> 接口</td></tr>
+<tr><td><code>engine_base/schedulers/FIFOScheduler.h/.cc</code></td><td><strong>FIFO 调度器</strong>：主调度器实现。管理 waiting/loading/running/new 四个 stream 队列。<code>schedule()</code> 按 FIFO 顺序评估 waiting streams 的显存需求（<code>evaluateRunningMemory()</code>），分配 KV cache，将可运行 streams 移入 running 列表</td></tr>
+<tr><td><code>engine_base/schedulers/BatchDecodeScheduler.h</code></td><td>批解码调度器：针对大批量 decode 的优化调度策略</td></tr>
+<tr><td><code>engine_base/schedulers/EngineScheduleInfo.h</code></td><td>调度信息：任务列表、等待/运行状态查询</td></tr>
+</table>
+
+<h3 id="s5-4">5.4 Stream 与生成状态管理</h3>
+
+<div class="card card-cyan">
+<p><span class="badge badge-cyan">目录</span> <code>rtp_llm/cpp/engine_base/stream/</code> — 每个推理请求对应一个 Stream</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>GenerateStream.h/.cc</code></td><td><strong>核心流对象</strong>（~1080行）：管理请求全生命周期。持有 <code>CompleteTokenIds</code>、<code>StreamCacheResource</code>、<code>GenerateStateMachine</code>。关键方法：<code>update()</code>（更新 token/KV cache/logits processor）、<code>batchSize()</code>/<code>numBeams()</code>（beam search 管理）、<code>setEffectiveBeamSize()</code>（约束解码动态裁剪）</td></tr>
+<tr><td><code>CompleteTokenIds.h/.cc</code></td><td><strong>Token ID 管理</strong>：维护 <code>[batch_size, max_seq_len]</code> 的完整 token 序列。<code>update()</code> 追加新 token，支持 beam search 全序列覆盖。<code>matchEosToken()</code>/<code>matchStopWordsList()</code> 检测终止条件</td></tr>
+<tr><td><code>GenerateConfig.h</code></td><td>生成配置：num_beams、temperature、top_k/top_p、stop_words、return_hidden_states 等</td></tr>
+<tr><td><code>GenerateTypes.h</code></td><td>类型定义：<code>GenerateInput</code>、<code>GenerateOutput</code>、<code>StreamUpdateInfo</code> 等核心数据结构</td></tr>
+<tr><td><code>GenerateStateMachine.h</code></td><td>状态机：管理 stream 的 <code>StreamState</code>（WAITING → RUNNING → FINISHED/ERROR）</td></tr>
+<tr><td><code>StreamCacheResource.h/.cc</code></td><td>Stream 级 KV cache 资源管理：block 分配/释放/重排</td></tr>
+<tr><td><code>StreamGroups.h</code></td><td>Stream 分组：将 context streams（prefill）和 decode streams 分组管理，计算 total batch size</td></tr>
+<tr><td><code>ResourceContext.h</code></td><td>全局资源上下文：持有 system prompt、cache manager 引用等</td></tr>
+</table>
+
+<!-- GenerateStream vs StreamGroups 深度分析 -->
+<h4>GenerateStream 与 StreamGroups：两层抽象的设计原理</h4>
+
+<div class="card card-blue">
+<h4>GenerateStream — 单个请求的完整生命周期（纵向抽象）</h4>
+<p><code>GenerateStream</code> 代表<strong>一个用户请求从入队到生成结束的完整状态机</strong>。其生命周期跨越数百个 decode step，持有：</p>
+<ul>
+    <li><strong>全部输入</strong>：token ids、generate config、multimodal features</li>
+    <li><strong>状态机</strong>：<code>GenerateStateMachine</code>（WAITING → LOADING_CACHE → RUNNING → FINISHED）</li>
+    <li><strong>KV Cache 资源</strong>：<code>StreamCacheResource</code>，管理 block 分配/释放</li>
+    <li><strong>采样输出</strong>：<code>CompleteTokenIds</code>、<code>cum_log_probs</code></li>
+    <li><strong>Logits Processor</strong>：CSR 约束解码等，每个请求独立的状态</li>
+    <li><strong>Beam Search 状态</strong>：<code>effective_beam_size_</code></li>
+    <li><strong>投机解码 Buffer</strong>：<code>propose_stream_</code>、<code>sp_output_buffer_</code></li>
+</ul>
+</div>
+
+<div class="card card-green">
+<h4>StreamGroups — 单次 forward 的批处理视图（横向抽象）</h4>
+<p><code>StreamGroups</code> 是<strong>一次 <code>model.forward()</code> 调用的临时批处理快照</strong>。从 <code>NormalExecutor::process()</code> 第一行即可看到：</p>
+<pre><code>// NormalExecutor.cc:126
+StreamGroups stream_groups(streams);  // 构造后立即使用，函数返回即销毁</code></pre>
+<p>它把 Scheduler 给出的 <code>running_streams_</code> 列表按当前状态<strong>分拣</strong>成 <code>context_streams_</code> 和 <code>decode_streams_</code>，并<strong>预计算</strong>本轮 forward 需要的所有聚合指标（batch size、max_seq_len、token 总数、block 数等），供后续 <code>gatherModelInput</code>、<code>gatherSamplerInput</code>、<code>dispatch</code> 使用。</p>
+<p><strong>两者关系是 1:N</strong> —— 一个 GenerateStream 参与数百次 StreamGroups（每个 decode step 一次），每次 StreamGroups 是当前这一步所有 running stream 的快照。</p>
+</div>
+
+<div class="diagram">
+GenerateStream (纵向 — 请求生命周期)
+│
+│  step 0     step 1     step 2     step 3    ...    step N
+│    │          │          │          │                 │
+│    ▼          ▼          ▼          ▼                 ▼
+│ ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐          ┌──────┐
+│ │Stream│  │Stream│  │Stream│  │Stream│          │Stream│
+│ │Groups│  │Groups│  │Groups│  │Groups│   ...    │Groups│  ← 横向：每步一个 StreamGroups
+│ │      │  │      │  │      │  │      │          │      │
+│ │ctx:A │  │dec:A │  │dec:A │  │dec:A │          │dec:A │  ← Stream A: step0 是 context，之后变 decode
+│ │      │  │dec:B │  │dec:B │  │dec:B │          │      │
+│ │      │  │      │  │ctx:C │  │dec:C │          │      │  ← Stream C: step2 加入，是 context
+│ └──────┘  └──────┘  └──────┘  └──────┘          └──────┘
+</div>
+
+<!-- Context vs Decode Streams 深度分析 -->
+<h4>为什么 StreamGroups 必须区分 Context Streams 和 Decode Streams</h4>
+
+<div class="card card-orange">
+<h4>1. Token 数量差异巨大</h4>
+<p>从 <code>NormalModelInputGatherer.cc</code> 可以看到两者的根本不同：</p>
+<pre><code>// processDecodeStreams (line 253):
+ctx.merged_tokens[ctx.batch_idx] = currentTokens[0];  // 每个 decode stream 只有 1 个 token
+
+// processContextStreams (line 293):
+memcpy(ctx.merged_tokens + ctx.token_idx, input_tokens.data(),
+       input_tokens.size() * sizeof(int));  // 每个 context stream 有几百~几千个 token</code></pre>
+<p>Decode stream 的 <code>currentExecuteTokens()</code> 返回 1 个 token（上一步刚生成的），输入是增量的；Context stream 返回完整的 input sequence（减去 prefix cache 复用的部分），输入是全量的。这直接决定了 <code>combo_tokens</code> 的拼接方式、<code>lm_output_indexes</code> 的计算、position ids 的生成逻辑都完全不同。</p>
+</div>
+
+<div class="card card-red">
+<h4>2. Attention 计算路径与复杂度完全不同</h4>
+<p>在 Transformer 模型的 Attention 层中，Context stream 走 <strong>Flash Attention</strong>（self-attention），Decode stream 走 <strong>Paged Attention</strong>（增量 attention），两者的 CUDA kernel、内存布局、<code>cu_seqlens</code> 构造方式完全不同。</p>
+
+<table>
+<tr><th></th><th>Context (Prefill)</th><th>Decode</th></tr>
+<tr><td><strong>Query 数量</strong></td><td>n（完整输入序列）</td><td>1（当前新 token）</td></tr>
+<tr><td><strong>KV 数量</strong></td><td>n</td><td>n（KV Cache 中的历史 token）</td></tr>
+<tr><td><strong>Attention 矩阵</strong></td><td>[n, n]</td><td>[1, n]</td></tr>
+<tr><td><strong>计算复杂度</strong></td><td>O(n&sup2;)</td><td>O(n)</td></tr>
+<tr><td><strong>瓶颈特征</strong></td><td>Compute-bound</td><td>Memory-bound</td></tr>
+<tr><td><strong>Attention Kernel</strong></td><td>Flash Attention</td><td>Paged Attention</td></tr>
+</table>
+</div>
+
+<div class="card card-purple">
+<h4>Decode 阶段 Attention 为 O(n) 的原因 — Causal Mask + KV Cache</h4>
+<p>在 Causal（因果）Attention 中，每个 token 只能 attend 到<strong>它自己和它之前的 token</strong>，不能看未来。这意味着当 decode 阶段生成新 token t<sub>n</sub> 时，旧 token t<sub>0</sub>~t<sub>n-1</sub> 的 attention 输出<strong>不会因为 t<sub>n</sub> 的出现而改变</strong>（因为 causal mask 保证它们看不到 t<sub>n</sub>）。</p>
+<p>因此旧 token 在 prefill 阶段算过的结果仍然有效，不需要重新计算。唯一需要计算的就是 t<sub>n</sub> 这一个新 token 的 attention 输出——用 t<sub>n</sub> 的 query 去 attend KV Cache 中 t<sub>0</sub>~t<sub>n</sub> 的所有 key/value：</p>
+<pre><code>// Decode 阶段每一步的 Attention 计算:
+Q: [1, d]      &larr; 当前生成的 1 个 token 的 query
+K: [n, d]      &larr; KV Cache 中的 n 个历史 key
+V: [n, d]      &larr; KV Cache 中的 n 个历史 value
+
+1. QK&sup1;: [1, d] &times; [d, n] = [1, n]  &rarr; O(n&middot;d) = O(n)  (d 是常数，通常 128)
+2. softmax: [1, n]              &rarr; O(n)
+3. score &times; V: [1, n] &times; [n, d] = [1, d]  &rarr; O(n)
+总计: O(n)</code></pre>
+
+<p>对比 Prefill 阶段：完整的 n 个 token 同时作为 query，<code>QK^T</code> 产生 <code>[n, n]</code> 的 attention 矩阵，计算量 O(n&sup2;)。</p>
+
+<p><strong>KV Cache 的本质</strong>是用<strong>显存</strong>（存储历史 K/V）换<strong>计算</strong>（避免重算）。如果不用 KV Cache，每生成一个新 token 都要重新过完整序列，生成 N 个 token 的总计算量是 O(1&sup2; + 2&sup2; + ... + N&sup2;) = O(N&sup3;)。有了 KV Cache，每步只算 1 个 query token，总计算量降为 O(1 + 2 + ... + N) = O(N&sup2;)。</p>
+</div>
+
+<div class="card card-cyan">
+<h4>3. KV Cache 操作语义不同</h4>
+<p>Context stream 需要<strong>一次写入整个序列到 KV cache</strong>（初始化 blocks），而 decode stream 只需要<strong>追加 1 个 token 到已有 blocks</strong>。对应 <code>kv_cache_update_mapping</code> 的构造也不同（<code>decodeBlockUpdateCopyNum</code> vs <code>contextBlockUpdateCopyNum</code> 分别统计）。</p>
+</div>
+
+<div class="card card-blue">
+<h4>4. 调度策略依赖此分类</h4>
+<p><code>FIFOScheduler::evaluateRunningMemory()</code>（<code>FIFOScheduler.cc:129-131</code>）需要知道当前 running 中有多少 decode batch（占用显存但计算量小）vs context batch（计算量大但一次性的），以做出正确的显存预算和 batching 决策。<code>StreamGroups</code> 的 <code>totalDecodeBatchSize()</code> 和 <code>totalContextBatchSize()</code> 直接服务于此。</p>
+</div>
+
+<div class="card card-green">
+<h4>5. Sampler 输出分发路径不同</h4>
+<p><code>NormalOutputDispatcher</code> 在分发 sampler 输出时：</p>
+<ul>
+    <li><strong>Context stream</strong>：第一次输出 token，需要设 <code>*is_context_stream_ = false</code>（转为 decode），同时处理 beam search 初始化（从 batch_size=1 扩展到 num_beams）</li>
+    <li><strong>Decode stream</strong>：追加 token，检查 EOS/stop words，更新 logits processor 状态</li>
+</ul>
+</div>
+
+<div class="card card-orange">
+<h4>6. Continuous Batching 核心设计</h4>
+<p>整个分类本质服务于 <strong>Continuous Batching</strong>（iteration-level scheduling）：</p>
+<pre><code>Scheduler 每一轮调度:
+  running_streams_ = [已在 decode 的 stream A, B, C] + [刚从 waiting 进来的新 stream D]
+                                                         &uarr;
+                                                    D 是 context stream (第一次执行，要跑 prefill)
+
+StreamGroups 分类后:
+  decode_streams_  = [A, B, C]     &rarr;  每个只需 forward 1 个 token
+  context_streams_ = [D]           &rarr;  需要 forward 完整 input sequence
+
+model.forward() 一次调用同时处理两类:
+  combo_tokens = [tokenA, tokenB, tokenC, tokenD_0, tokenD_1, ..., tokenD_N]
+                  &larr; decode 在前 &rarr;           &larr;  context 在后  &rarr;</code></pre>
+<p><code>allStreams()</code> 返回 <strong>decode 在前、context 在后</strong>的顺序（<code>StreamGroups.h:150-153</code>），这个顺序在整个 pipeline 中保持一致——gather、forward、sample、dispatch 都按同一 batch 维度排列。</p>
+</div>
+
+<h3 id="s5-5">5.5 Sampler 与采样策略</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>models/Sampler.h/.cc</code></td><td><strong>采样器</strong>：<code>forward(SamplerInputs)</code> 按 beam_size 将 batch 分组。beam=1 走 <code>execSampleGreedy</code>（支持 top-k/top-p/temperature/repetition_penalty）；beam>1 走 <code>execSampleBeamSearch</code>（TRT beam search kernel）。实现 PRE-Stage-C LSE 重写保证限制性解码保序性</td></tr>
+<tr><td><code>models/SampleInfos.h</code></td><td><code>SamplerInputs</code>/<code>SamplerOutput</code> 数据结构定义：logits、beam 参数、cum_log_probs、effective_beam_sizes 等</td></tr>
+<tr><td><code>models_py/bindings/core/CudaSampleOp.cc</code></td><td>CUDA Greedy 采样实现：调用 TRT top-k/top-p kernel</td></tr>
+<tr><td><code>models_py/bindings/core/CudaBeamSearchOp.cc</code></td><td>CUDA Beam Search 实现：调用 TRT <code>invokeTopkBeamSearch</code> kernel。支持 <code>logits_already_log_softmaxed</code> 标志跳过内部 log_softmax</td></tr>
+<tr><td><code>models_py/bindings/core/OpData.h</code></td><td>算子数据结构：<code>BeamSearchParams</code>、<code>BeamSearchOutput</code>、<code>GreedyOutput</code> 等</td></tr>
+</table>
+
+<h3 id="s5-6">5.6 Logits Processor 与限制性解码</h3>
+
+<div class="card card-orange">
+<p><span class="badge badge-orange">目录</span> <code>rtp_llm/cpp/models/logits_processor/</code> — 解码约束处理器</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>BaseLogitsProcessor.h/.cc</code></td><td><strong>基类</strong>：定义 <code>process()</code>（修改 logits）、<code>updateStatus()</code>（采样后更新状态）、<code>updateMultiSeqStatus()</code>（beam 重排后更新）接口</td></tr>
+<tr><td><code>LogitsProcessorStates.h/.cc</code></td><td>处理器状态管理：持有多个 processor 及其作用的 batch 区间，<code>batchProcess()</code> 遍历所有 processor</td></tr>
+<tr><td><code>TreeLogitsProcessorCSR.h/.cc</code></td><td><strong>CSR 前缀树限制性解码</strong>：基于 CSR 编码的前缀树约束。<code>fromGenerateInput()</code> 异步构建 CSR 索引；<code>process()</code> 在 GPU 上生成 mask 并 maskLogits；<code>updateStatus()</code> GPU 上更新状态；<code>updateMultiSeqStatus()</code> beam 重排</td></tr>
+<tr><td><code>TreeLogitsProcessorCSRGpu.cc</code></td><td>CSR 处理器的 GPU 实现（性能优化版）：持久化 GPU buffer、异步延迟初始化、GPU gather/update</td></tr>
+<tr><td><code>TreeLogitsProcessor.h/.cc</code></td><td>原始树型限制性解码（CPU 版本）</td></tr>
+<tr><td><code>ThinkModeLogitsProcessor.h/.cc</code></td><td>思考模式处理器：控制 thinking token 的生成</td></tr>
+<tr><td><code>MultiSeqLogitsProcessor.h/.cc</code></td><td>多序列处理器：管理 beam search / num_return_sequences 的状态</td></tr>
+<tr><td><code>csr_utils.h</code></td><td>CSR 索引构建工具：<code>CSRIndex</code> 结构、<code>build_csr_from_fresh_data()</code> 等</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. KV Cache 系统</h2>
+
+<div class="card card-green">
+<p><span class="badge badge-green">目录</span> <code>rtp_llm/cpp/cache/</code> — 33 个头文件，实现 Paged Attention 的 KV Cache 管理</p>
+</div>
+
+<div class="diagram">
+KV Cache 系统架构：
+
+KVCacheManager (顶层管理器)
+├── KVCacheAllocator (分配器抽象)
+│   ├── SingleTypeKVCacheAllocator (单类型分配)
+│   └── HybridTypeKVCacheAllocator (混合类型分配)
+├── KVCacheGroup (cache 组)
+│   ├── FullKVCacheGroup (完整 KV 存储)
+│   └── LinearKVCacheGroup (线性注意力)
+├── BlockPool (block 池)
+│   ├── BlockRefCounter (引用计数)
+│   └── BlockInfo (block 元信息)
+├── BlockCache (prefix cache)
+│   └── KVCacheHashUtil (hash 工具)
+├── KVCacheSpec (cache 规格)
+│   ├── MHAKVCacheSpec (Multi-Head Attention)
+│   ├── MLAKVCacheSpec (Multi-Latent Attention)
+│   └── LinearKVCacheSpec (线性注意力)
+└── CacheConfig (配置)
+    ├── CacheConfigCreator
+    ├── BlockPoolConfig
+    └── MemoryLayoutStrategy
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>KVCacheManager.h/.cc</code></td><td><strong>顶层管理器</strong>：<code>malloc()</code> 分配 block、<code>free()</code> 释放、<code>blockBatchCopy()</code> 批量拷贝（beam search 重排）、<code>insertIntoCache()</code> 前缀缓存插入</td></tr>
+<tr><td><code>BlockPool.h/.cc</code></td><td><strong>Block 池</strong>：管理 GPU 上的 KV cache block 内存。每个 block 存储固定数量 tokens 的 KV 值</td></tr>
+<tr><td><code>BlockCache.h/.cc</code></td><td><strong>前缀缓存</strong>：基于 hash 的前缀匹配，复用相同 prefix 的 KV cache block</td></tr>
+<tr><td><code>MHAKVCacheSpec.h</code></td><td>Multi-Head Attention cache 规格：每个 head 独立的 K/V 存储</td></tr>
+<tr><td><code>MLAKVCacheSpec.h</code></td><td>Multi-Latent Attention cache 规格（DeepSeek V2/V3）：压缩 KV 存储</td></tr>
+<tr><td><code>BatchKVCacheResource.h</code></td><td>Batch 级 KV cache 资源：每个 stream 的 block 列表和 block 映射</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s7">7. CUDA Kernel 与计算后端</h2>
+
+<div class="card card-red">
+<p><span class="badge badge-red">说明</span> CUDA kernel 代码分布在 <code>models_py/bindings/</code>（per-platform ops）和 <code>3rdparty/</code>（第三方 kernel）中</p>
+</div>
+
+<table>
+<tr><th>目录/文件</th><th>作用</th></tr>
+<tr><td><code>models_py/bindings/core/CudaOps.cc</code></td><td>核心 CUDA 算子注册：将各种 CUDA kernel 封装为可调用的 C++ 函数</td></tr>
+<tr><td><code>models_py/bindings/core/CudaSampleOp.cc</code></td><td>Greedy/Top-K/Top-P 采样 CUDA 实现</td></tr>
+<tr><td><code>models_py/bindings/core/CudaBeamSearchOp.cc</code></td><td>Beam Search CUDA 实现：调用 TRT beam search kernel</td></tr>
+<tr><td><code>models_py/bindings/cuda/</code></td><td>CUDA 平台特定绑定（ops、host_utils 等）</td></tr>
+<tr><td><code>models_py/bindings/rocm/</code></td><td>ROCm/AMD 平台特定绑定</td></tr>
+<tr><td><code>models_py/bindings/common/</code></td><td>跨平台共用代码（如 CSR logits kernel）</td></tr>
+<tr><td><code>3rdparty/trt_beam_search/</code></td><td><strong>TRT Beam Search</strong>：来自 TensorRT-LLM 的 beam search CUDA kernel（Stage A/B/C 三阶段）</td></tr>
+<tr><td><code>models_py/triton_kernels/</code></td><td><strong>Triton Kernels</strong>：MoE、FLA（Flash Linear Attention）、Sparse MLA 等 Triton 实现</td></tr>
+<tr><td><code>models_py/kernels/cuda/</code></td><td>CUDA 特定 kernel 封装</td></tr>
+</table>
+
+<h4>计算库依赖</h4>
+<table>
+<tr><th>库</th><th>用途</th></tr>
+<tr><td>cuBLAS</td><td>GEMM（矩阵乘法）</td></tr>
+<tr><td>CUTLASS</td><td>混合精度 GEMM、MoE GEMM</td></tr>
+<tr><td>FlashAttention / FlashInfer</td><td>高效 attention 计算</td></tr>
+<tr><td>DeepGEMM</td><td>FP8 GEMM 优化</td></tr>
+<tr><td>TensorRT-LLM Kernels</td><td>Beam Search、Top-K/Top-P 采样</td></tr>
+<tr><td>Triton</td><td>MoE、自定义 attention kernel</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s8">8. 高级特性</h2>
+
+<h3 id="s8-1">8.1 推测性解码 (Speculative Decoding)</h3>
+
+<div class="card card-purple">
+<p><span class="badge badge-purple">目录</span> <code>rtp_llm/cpp/normal_engine/speculative/</code></p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>MtpExecutor.h/.cc</code></td><td><strong>MTP 执行器</strong>：Multi-Token Prediction 推测性解码。使用 draft model 预测多个候选 token，target model 验证</td></tr>
+<tr><td><code>MtpBatchStreamProcessor.h/.cc</code></td><td>MTP 批处理器：管理 draft/target 模型的 batch 输入输出</td></tr>
+<tr><td><code>SpeculativeSampler.h/.cc</code></td><td>推测采样器：实现 speculative sampling 的接受/拒绝逻辑</td></tr>
+</table>
+
+<h3 id="s8-2">8.2 Prefill/Decode 分离 (Disaggregation)</h3>
+
+<div class="card card-cyan">
+<p><span class="badge badge-cyan">目录</span> <code>rtp_llm/cpp/disaggregate/</code> — Prefill 和 Decode 阶段在不同 GPU 上执行</p>
+</div>
+
+<table>
+<tr><th>子目录</th><th>作用</th></tr>
+<tr><td><code>cache_store/</code></td><td><strong>Cache Store</strong>（30+ 文件）：管理跨节点的 KV cache 传输。<code>NormalCacheStore</code> 为主接口。支持 TCP (<code>TcpMessager</code>) 和 RDMA 传输。包含 block buffer 管理、异步读写、连接池等</td></tr>
+<tr><td><code>load_balancer/</code></td><td>负载均衡：Prefill/Decode 节点间的请求路由</td></tr>
+</table>
+
+<h3 id="s8-3">8.3 CUDA Graph</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>cuda_graph/cuda_graph_runner.h</code></td><td><strong>CUDA Graph Runner</strong>：capture decode 阶段的 CUDA kernel 调用图，后续 replay 避免 kernel launch 开销</td></tr>
+<tr><td><code>cuda_graph/cuda_graph_base.h</code></td><td>CUDA Graph 基础设施：graph 创建、节点管理</td></tr>
+<tr><td><code>cuda_graph/cuda_graph_utils.h</code></td><td>工具函数：graph capture/replay 辅助</td></tr>
+</table>
+
+<h3 id="s8-4">8.4 多模态处理</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>multimodal_processor/MultimodalProcessor.h</code></td><td>多模态处理器基类：处理图片/视频输入</td></tr>
+<tr><td><code>multimodal_processor/LocalMultimodalProcessor.h</code></td><td>本地 ViT 处理：在推理进程内运行 vision encoder</td></tr>
+<tr><td><code>multimodal_processor/RemoteMultimodalProcessor.h</code></td><td>远程 ViT 处理：通过 RPC 调用独立的 ViT 服务</td></tr>
+<tr><td><code>multimodal_processor/MultimodalTypes.h</code></td><td>多模态数据类型：图像 tensor、embedding 等</td></tr>
+</table>
+
+<h3 id="s8-5">8.5 LoRA 多适配器</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>lora/lora_manager.py</code></td><td><strong>LoRA 管理器</strong>：管理多个 LoRA 适配器的加载/卸载/切换</td></tr>
+<tr><td><code>lora/lora_weights.py</code></td><td>LoRA 权重加载与格式转换</td></tr>
+<tr><td><code>lora/lora_file.py</code></td><td>LoRA 文件解析（SafeTensors/bin 格式）</td></tr>
+</table>
+
+<h3 id="s8-6">8.6 分布式 (Tensor Parallelism)</h3>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>distribute/distributed_server.py</code></td><td><strong>分布式服务</strong>：管理多 GPU/多节点的 worker 发现、NCCL 通信初始化</td></tr>
+<tr><td><code>distribute/worker_info.py</code></td><td>Worker 信息：IP、端口、rank 等</td></tr>
+<tr><td><code>models_py/distributed/</code></td><td>分布式通信层：<code>collective_torch.py</code>（NCCL 初始化）、<code>deepep_wrapper.py</code>（DeepEP MoE 通信）</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s9">9. PyBind 层 — C++ 与 Python 的桥梁</h2>
+
+<div class="card card-blue">
+<p><span class="badge badge-blue">目录</span> <code>rtp_llm/cpp/pybind/</code> — 通过 pybind11 将 C++ 引擎暴露给 Python</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>init.cc</code></td><td>pybind11 模块注册入口：注册所有 C++ 类和函数到 Python 模块</td></tr>
+<tr><td><code>ConfigInit.cc</code></td><td>配置类型绑定：将 C++ 配置结构体（<code>ModelConfig</code>、<code>ParallelismConfig</code> 等）导出为 Python 可用类型 → 编译为 <code>libth_transformer_config.so</code></td></tr>
+<tr><td><code>ComputeInit.cc</code></td><td>计算算子绑定：将 CUDA/ROCm 算子导出 → 编译为 <code>librtp_compute_ops.so</code></td></tr>
+<tr><td><code>multi_gpu_gpt/RtpLLMOp.h/.cc</code></td><td><strong>RtpLLMOp</strong>：主推理算子，Python 通过此类控制 C++ 引擎。<code>init()</code> 创建引擎 + RPC 服务 + HTTP 服务。编译为 <code>libth_transformer.so</code></td></tr>
+<tr><td><code>multi_gpu_gpt/RtpEmbeddingOp.h/.cc</code></td><td><strong>RtpEmbeddingOp</strong>：Embedding 推理算子</td></tr>
+<tr><td><code>common/InitEngineOps.h/.cc</code></td><td>引擎初始化辅助：从 Python dict/object 构建 <code>EngineInitParams</code></td></tr>
+</table>
+
+<h4>三个 .so 库的关系</h4>
+<div class="diagram">
+Python 应用
+    │
+    ├── import libth_transformer_config.so   (配置类型)
+    │       ↑ ConfigInit.cc
+    │
+    ├── import librtp_compute_ops.so        (计算算子)
+    │       ↑ ComputeInit.cc
+    │
+    └── import libth_transformer.so          (完整引擎)
+            ↑ init.cc + RtpLLMOp + RtpEmbeddingOp
+            ↑ 链接: NormalEngine + Scheduler + Cache + CUDA kernels + ...
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s10">10. C++ API Server</h2>
+
+<div class="card card-green">
+<p><span class="badge badge-green">目录</span> <code>rtp_llm/cpp/api_server/</code> — C++ 实现的高性能 HTTP 服务器（可选，替代 Python FastAPI）</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>HttpApiServer.h/.cc</code></td><td><strong>HTTP API 服务器</strong>：顶层服务器类，管理路由和服务生命周期</td></tr>
+<tr><td><code>ChatService.h/.cc</code></td><td>Chat 推理服务：处理 chat/completions 请求</td></tr>
+<tr><td><code>InferenceService.h/.cc</code></td><td>通用推理服务</td></tr>
+<tr><td><code>EmbeddingService.h/.cc</code></td><td>Embedding 推理服务</td></tr>
+<tr><td><code>openai/OpenaiEndpoint.h/.cc</code></td><td>C++ 版 OpenAI 兼容端点</td></tr>
+<tr><td><code>openai/ChatRender.h/.cc</code></td><td>C++ 版 Chat 模板渲染</td></tr>
+<tr><td><code>tokenizer/Tokenizer.h</code></td><td>C++ Tokenizer 接口</td></tr>
+<tr><td><code>TokenProcessor.h/.cc</code></td><td>Token 后处理（C++ 版）</td></tr>
+<tr><td><code>GenerateStreamWrapper.h/.cc</code></td><td>Stream 的 HTTP 响应封装</td></tr>
+<tr><td><code>http_server/http_server/</code></td><td>底层 HTTP 框架：<code>HttpServer</code>、<code>HttpRouter</code>、<code>HttpRequest/Response</code> 等</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s11">11. Model RPC 服务</h2>
+
+<div class="card card-orange">
+<p><span class="badge badge-orange">目录</span> <code>rtp_llm/cpp/model_rpc/</code> — gRPC 服务层，Frontend ↔ Backend 通信</p>
+</div>
+
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>LocalRpcServiceImpl.h/.cc</code></td><td><strong>本地 RPC</strong>：Frontend 和 Backend 在同一进程时的直接调用路径</td></tr>
+<tr><td><code>RemoteRpcServiceImpl.h/.cc</code></td><td><strong>远程 RPC</strong>：跨进程/跨节点的 gRPC 实现</td></tr>
+<tr><td><code>LocalRpcServer.h/.cc</code></td><td>本地 RPC 服务器</td></tr>
+<tr><td><code>PrefillRpcServer.h/.cc</code></td><td>Prefill 专用 RPC 服务器（PD 分离模式）</td></tr>
+<tr><td><code>DecodeRpcServer.h/.cc</code></td><td>Decode 专用 RPC 服务器（PD 分离模式）</td></tr>
+<tr><td><code>GenerateContext.h</code></td><td>生成上下文：封装单个请求的 RPC 生命周期</td></tr>
+<tr><td><code>QueryConverter.h/.cc</code></td><td>请求格式转换：gRPC protobuf ↔ 内部 <code>GenerateInput</code></td></tr>
+<tr><td><code>BroadcastManager.h/.cc</code></td><td>广播管理器：TP 模式下将输入广播到所有 rank</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s12">12. Python 模型执行框架 (models_py)</h2>
+
+<div class="card card-purple">
+<p><span class="badge badge-purple">目录</span> <code>rtp_llm/models_py/</code> — Python 侧模型执行框架</p>
+</div>
+
+<table>
+<tr><th>子目录</th><th>作用</th></tr>
+<tr><td><code>bindings/core/</code></td><td><strong>核心绑定</strong>：<code>ExecOps.h/.cc</code>（算子执行接口）、<code>OpData.h</code>（算子数据结构）、<code>Types.h</code>（数据类型定义）、<code>DeviceData.h</code>（设备数据描述）。这些文件定义了模型前向推理使用的所有算子接口</td></tr>
+<tr><td><code>bindings/cuda/</code></td><td>CUDA 平台算子实现和 standalone ops</td></tr>
+<tr><td><code>bindings/rocm/</code></td><td>ROCm 平台算子实现</td></tr>
+<tr><td><code>bindings/common/</code></td><td>跨平台共用算子（如 CSR logits kernel）</td></tr>
+<tr><td><code>model_desc/</code></td><td><strong>模型描述符</strong>：每种模型结构一个文件。<code>module_base.py</code> 定义基类；<code>qwen3.py</code>、<code>generic_moe.py</code> 等描述具体模型的层结构、attention 配置等</td></tr>
+<tr><td><code>modules/</code></td><td><strong>模块工厂</strong>：<code>factory/</code> 下按功能分模块（attention、fused_moe、linear）。<code>hybrid/</code> 下提供 <code>causal_attention.py</code>、<code>mla_attention.py</code>、<code>dense_mlp.py</code> 等混合推理模块</td></tr>
+<tr><td><code>triton_kernels/</code></td><td><strong>Triton Kernels</strong>：<code>moe/</code>（MoE dispatch/combine）、<code>fla/</code>（Flash Linear Attention）、<code>sparse_mla/</code>（稀疏 MLA）、<code>kimi_kda/</code>（Kimi K-DA attention）等自定义 Triton kernel</td></tr>
+<tr><td><code>distributed/</code></td><td>分布式通信：NCCL 初始化、DeepEP 集成</td></tr>
+<tr><td><code>standalone/</code></td><td>独立测试/benchmark 工具</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s13">13. 构建系统与平台支持</h2>
+
+<h3>Bazel 构建</h3>
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>WORKSPACE</code></td><td>Bazel 工作空间定义：外部依赖引入</td></tr>
+<tr><td><code>BUILD</code></td><td>顶层构建目标：<code>th_transformer</code>、<code>rtp_compute_ops</code>、<code>th_transformer_config</code></td></tr>
+<tr><td><code>.bazelrc</code></td><td>构建配置：<code>cuda12</code>、<code>cuda12_9</code>、<code>rocm</code>、<code>cpu</code>、<code>arm</code> 等平台配置</td></tr>
+<tr><td><code>def.bzl</code></td><td>自定义 Bazel 宏：<code>cc_test_wrapper</code>（C++ 测试）、<code>py_test</code>、编译选项</td></tr>
+<tr><td><code>deps/</code></td><td>构建依赖管理：<code>http.bzl</code>（HTTP 依赖）、<code>git.bzl</code>（Git 依赖）、<code>pip.bzl</code>（Python 依赖）</td></tr>
+</table>
+
+<h3>平台支持矩阵</h3>
+<table>
+<tr><th>平台</th><th>配置</th><th>GPU</th></tr>
+<tr><td>NVIDIA CUDA 12.4</td><td><code>--config=cuda12</code></td><td>V100 → H800 (SM 7.0-9.0)</td></tr>
+<tr><td>NVIDIA CUDA 12.9</td><td><code>--config=cuda12_9</code></td><td>+ Blackwell (SM 10.0)</td></tr>
+<tr><td>AMD ROCm</td><td><code>--config=rocm</code></td><td>MI300X (gfx942)</td></tr>
+<tr><td>ARM (Grace)</td><td><code>--config=cuda12_9_arm</code></td><td>GB200 ARM</td></tr>
+<tr><td>CPU</td><td><code>--config=cpu</code></td><td>仅 CPU</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s14">14. 目录结构全景与文件索引</h2>
+
+<div class="file-tree">
+<span class="dir">rtp_llm/</span>                              <span class="desc">— 主包根目录</span>
+├── <span class="dir">__init__.py</span>                        <span class="desc">— 包初始化：加载 .so 库，导入内部模型</span>
+├── <span class="dir">start_server.py</span>                    <span class="desc">— 服务主入口：启动 backend + frontend 进程</span>
+├── <span class="dir">start_backend_server.py</span>            <span class="desc">— Backend 进程入口</span>
+├── <span class="dir">start_frontend_server.py</span>           <span class="desc">— Frontend 进程入口</span>
+├── <span class="dir">model_factory.py</span>                   <span class="desc">— 模型工厂：根据 HF config 创建引擎</span>
+├── <span class="dir">model_factory_register.py</span>          <span class="desc">— 模型注册表</span>
+│
+├── <span class="dir">config/</span>                            <span class="desc">— 配置模块 (13 文件)</span>
+│   ├── model_config.py                <span class="desc">— ModelConfig 核心配置</span>
+│   ├── engine_config.py               <span class="desc">— EngineConfig 引擎配置</span>
+│   ├── generate_config.py             <span class="desc">— 生成参数配置</span>
+│   ├── kv_cache_config.py             <span class="desc">— KV Cache 配置</span>
+│   ├── py_config_modules.py           <span class="desc">— Python 配置模块聚合</span>
+│   └── server_config_setup.py         <span class="desc">— 服务配置初始化</span>
+│
+├── <span class="dir">server/</span>                            <span class="desc">— 服务管理 (40+ 文件)</span>
+│   ├── backend_manager.py             <span class="desc">— BackendManager：引擎生命周期管理</span>
+│   ├── backend_rpc_server_visitor.py  <span class="desc">— RPC 服务访问器</span>
+│   └── server_args/                   <span class="desc">— 命令行参数组定义 (30+ group_args 文件)</span>
+│
+├── <span class="dir">frontend/</span>                          <span class="desc">— 前端 HTTP 服务</span>
+│   ├── frontend_server.py             <span class="desc">— FrontendServer 主类</span>
+│   ├── frontend_app.py                <span class="desc">— FastAPI 应用与路由注册</span>
+│   ├── frontend_worker.py             <span class="desc">— 推理请求执行器</span>
+│   ├── token_processor.py             <span class="desc">— Token 后处理</span>
+│   └── tokenizer_factory/             <span class="desc">— Tokenizer 工厂 (15+ tokenizer 实现)</span>
+│
+├── <span class="dir">openai/</span>                            <span class="desc">— OpenAI API 兼容层</span>
+│   ├── openai_endpoint.py             <span class="desc">— /v1/chat/completions 端点实现</span>
+│   ├── api_datatype.py                <span class="desc">— API 数据类型 (Pydantic)</span>
+│   ├── renderer_factory.py            <span class="desc">— Chat 渲染器工厂</span>
+│   └── renderers/                     <span class="desc">— 20+ 模型专用渲染器</span>
+│
+├── <span class="dir">models/</span>                            <span class="desc">— Python 模型定义 (45+ 文件)</span>
+│   ├── llama.py, qwen_v3.py, ...      <span class="desc">— 各模型的参数映射和配置</span>
+│   └── base_model.py                  <span class="desc">— 模型基类</span>
+│
+├── <span class="dir">model_loader/</span>                      <span class="desc">— 权重加载 (31 文件)</span>
+│   ├── loader.py                      <span class="desc">— 加载主入口</span>
+│   ├── weight_manager.py              <span class="desc">— 权重管理（TP 切分、拼接）</span>
+│   └── *_quant_weight.py              <span class="desc">— 各量化格式加载器</span>
+│
+├── <span class="dir">pipeline/</span>                          <span class="desc">— Pipeline API</span>
+│   └── pipeline.py                    <span class="desc">— 简化推理接口</span>
+│
+├── <span class="dir">distribute/</span>                        <span class="desc">— 分布式</span>
+│   └── distributed_server.py          <span class="desc">— 多 GPU/多节点 Worker 管理</span>
+│
+├── <span class="dir">lora/</span>                              <span class="desc">— LoRA 适配器管理</span>
+│   ├── lora_manager.py                <span class="desc">— 多 LoRA 管理器</span>
+│   └── lora_weights.py                <span class="desc">— LoRA 权重加载</span>
+│
+├── <span class="dir">ops/</span>                               <span class="desc">— .so 加载器 + C++ 类型导出</span>
+│
+├── <span class="dir">models_py/</span>                         <span class="desc">— Python 模型执行框架</span>
+│   ├── <span class="dir">bindings/core/</span>                <span class="desc">— 核心算子接口 (ExecOps, OpData, Types)</span>
+│   ├── <span class="dir">bindings/cuda/</span>                <span class="desc">— CUDA 算子实现</span>
+│   ├── <span class="dir">bindings/rocm/</span>                <span class="desc">— ROCm 算子实现</span>
+│   ├── <span class="dir">model_desc/</span>                   <span class="desc">— 模型结构描述符</span>
+│   ├── <span class="dir">modules/</span>                      <span class="desc">— 推理模块工厂</span>
+│   ├── <span class="dir">triton_kernels/</span>               <span class="desc">— Triton 自定义 kernel</span>
+│   └── <span class="dir">distributed/</span>                  <span class="desc">— 分布式通信</span>
+│
+├── <span class="dir">cpp/</span>                               <span class="desc">— C++ 核心引擎 (576 文件)</span>
+│   ├── <span class="dir">engine_base/</span>                  <span class="desc">— 引擎抽象层</span>
+│   │   ├── EngineBase.h               <span class="desc">— 引擎基类</span>
+│   │   ├── Executor.h                 <span class="desc">— 执行器基类</span>
+│   │   ├── <span class="dir">schedulers/</span>              <span class="desc">— FIFO/BatchDecode 调度器</span>
+│   │   ├── <span class="dir">stream/</span>                  <span class="desc">— GenerateStream, CompleteTokenIds 等</span>
+│   │   └── <span class="dir">system_prompt/</span>           <span class="desc">— System Prompt 管理</span>
+│   │
+│   ├── <span class="dir">normal_engine/</span>                <span class="desc">— 主推理引擎实现</span>
+│   │   ├── NormalEngine.h/.cc         <span class="desc">— 主引擎（主循环 + 调度）</span>
+│   │   ├── NormalExecutor.h/.cc       <span class="desc">— 执行器（model forward + sample）</span>
+│   │   ├── NormalBatchStreamProcessor <span class="desc">— 批处理协调器</span>
+│   │   ├── NormalOutputDispatcher     <span class="desc">— 输出分发器</span>
+│   │   └── <span class="dir">speculative/</span>             <span class="desc">— MTP/Eagle3 推测性解码</span>
+│   │
+│   ├── <span class="dir">cache/</span>                        <span class="desc">— Paged Attention KV Cache (33 文件)</span>
+│   │   ├── KVCacheManager.h           <span class="desc">— 顶层 Cache 管理器</span>
+│   │   ├── BlockPool.h                <span class="desc">— Block 池</span>
+│   │   ├── BlockCache.h               <span class="desc">— 前缀缓存</span>
+│   │   └── M*KVCacheSpec.h            <span class="desc">— MHA/MLA Cache 规格</span>
+│   │
+│   ├── <span class="dir">models/</span>                       <span class="desc">— 采样、权重、EPLB</span>
+│   │   ├── Sampler.h/.cc              <span class="desc">— 采样器</span>
+│   │   ├── <span class="dir">logits_processor/</span>        <span class="desc">— 限制性解码处理器</span>
+│   │   ├── <span class="dir">models_weight/</span>           <span class="desc">— 权重结构定义</span>
+│   │   └── <span class="dir">eplb/</span>                    <span class="desc">— Expert Load Balancing</span>
+│   │
+│   ├── <span class="dir">api_server/</span>                   <span class="desc">— C++ HTTP API 服务器</span>
+│   ├── <span class="dir">model_rpc/</span>                    <span class="desc">— gRPC 服务层</span>
+│   ├── <span class="dir">pybind/</span>                       <span class="desc">— pybind11 绑定</span>
+│   ├── <span class="dir">cuda_graph/</span>                   <span class="desc">— CUDA Graph capture/replay</span>
+│   ├── <span class="dir">disaggregate/</span>                 <span class="desc">— PD 分离 + Cache Store</span>
+│   ├── <span class="dir">multimodal_processor/</span>         <span class="desc">— 多模态处理</span>
+│   ├── <span class="dir">embedding_engine/</span>             <span class="desc">— Embedding 引擎 (gRPC/ARPC)</span>
+│   ├── <span class="dir">metrics/</span>                      <span class="desc">— 性能指标收集</span>
+│   └── <span class="dir">utils/</span>                        <span class="desc">— 通用工具</span>
+│
+├── <span class="dir">3rdparty/</span>                          <span class="desc">— 第三方依赖</span>
+│   └── <span class="dir">trt_beam_search/</span>              <span class="desc">— TensorRT-LLM Beam Search Kernel</span>
+│
+└── <span class="dir">其他目录</span>
+    ├── embedding/                     <span class="desc">— Embedding 端点</span>
+    ├── eplb/                          <span class="desc">— Expert Load Balancing Python 工具</span>
+    ├── metrics/                       <span class="desc">— kmonitor 指标</span>
+    ├── structure/                     <span class="desc">— 请求/响应结构定义</span>
+    ├── access_logger/                 <span class="desc">— 访问日志</span>
+    ├── async_decoder_engine/          <span class="desc">— 异步解码引擎 Python 封装</span>
+    ├── cli/                           <span class="desc">— 命令行工具</span>
+    └── utils/                         <span class="desc">— Python 工具集</span>
+</div>
+
+<h3>核心数据流 Summary</h3>
+
+<div class="card card-blue">
+<table>
+<tr><th>阶段</th><th>关键类</th><th>关键文件</th></tr>
+<tr><td>HTTP 请求接收</td><td>FrontendServer → OpenaiEndpoint</td><td><code>frontend_server.py</code> / <code>openai_endpoint.py</code></td></tr>
+<tr><td>Tokenize</td><td>TokenizerFactory → BaseTokenizer</td><td><code>tokenizer_factory/</code></td></tr>
+<tr><td>RPC 调用</td><td>RpcServiceImpl</td><td><code>model_rpc/LocalRpcServiceImpl.h</code></td></tr>
+<tr><td>入队调度</td><td>NormalEngine → FIFOScheduler</td><td><code>NormalEngine.cc</code> / <code>FIFOScheduler.cc</code></td></tr>
+<tr><td>KV Cache 分配</td><td>KVCacheManager</td><td><code>cache/KVCacheManager.cc</code></td></tr>
+<tr><td>输入收集</td><td>NormalModelInputGatherer</td><td><code>NormalModelInputGatherer.cc</code></td></tr>
+<tr><td>模型前向</td><td>ModelBase (PyWrappedModel)</td><td><code>models/PyWrappedModel.h</code></td></tr>
+<tr><td>采样</td><td>Sampler → BeamSearch/Greedy</td><td><code>models/Sampler.cc</code> / <code>CudaBeamSearchOp.cc</code></td></tr>
+<tr><td>输出分发</td><td>NormalOutputDispatcher</td><td><code>NormalOutputDispatcher.cc</code></td></tr>
+<tr><td>Stream 更新</td><td>GenerateStream.update()</td><td><code>stream/GenerateStream.cc</code></td></tr>
+<tr><td>结果返回</td><td>NormalGenerateStream.nextOutput()</td><td><code>NormalGenerateStream.cc</code></td></tr>
+</table>
+</div>
+
+<p style="margin-top:2rem; padding-top:1rem; border-top:1px solid var(--gray-200); color:var(--gray-600); font-size:.88rem;">
+    文档生成日期：2026-06-09 | 基于 RTP-LLM github-opensource 仓库 HEAD (commit e929cb123) | 分析工具：Claude Code
+</p>
+
+</div>
+</body>
+</html>
