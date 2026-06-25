@@ -2,6 +2,7 @@ import functools
 import json
 import logging
 import os
+import time
 from abc import ABC
 from typing import List, Optional, Tuple
 
@@ -80,6 +81,7 @@ class ReasoningToolBaseRenderer(CustomChatRenderer, ABC):
         )
         self._setup_stop_words()
         self._setup_chat_template()
+        self._compile_chat_template()
 
     def _setup_stop_words(self):
         """设置额外的停止词，子类可以重写"""
@@ -122,9 +124,29 @@ class ReasoningToolBaseRenderer(CustomChatRenderer, ABC):
     @override
     def render_chat(self, request: ChatCompletionRequest) -> RenderedInputs:
         """渲染聊天请求"""
+        t0 = time.perf_counter()
         prompt: str = self._build_prompt(request)
+        t1 = time.perf_counter()
         input_ids: List[int] = self.tokenizer.encode(prompt)
+        t2 = time.perf_counter()
+        logging.info(
+            f"[PERF] render_chat detail: build_prompt={((t1-t0)*1000):.2f}ms, "
+            f"tokenizer_encode={((t2-t1)*1000):.2f}ms (prompt_len={len(prompt)} chars)"
+        )
         return RenderedInputs(input_ids=input_ids, rendered_prompt=prompt)
+
+    def _compile_chat_template(self):
+        """Init 时编译 Jinja2 模板，避免每次请求重复编译 (~14ms)"""
+        env = Environment(
+            loader=BaseLoader(),
+            trim_blocks=True,
+            lstrip_blocks=True,
+            extensions=["jinja2.ext.do", "jinja2.ext.loopcontrols"],
+        )
+        self._customize_jinja_env(env)
+        self._jinja_env = env
+        self._compiled_template = env.from_string(self.chat_template)
+        logging.info("[PERF] _compile_chat_template done (cached for reuse)")
 
     def _build_prompt(self, request: ChatCompletionRequest) -> str:
         """
@@ -153,20 +175,8 @@ class ReasoningToolBaseRenderer(CustomChatRenderer, ABC):
         ):
             context.update(request.extra_configs.chat_template_kwargs)
 
-        # 创建Jinja2环境
-        env = Environment(
-            loader=BaseLoader(),
-            trim_blocks=True,
-            lstrip_blocks=True,
-            extensions=["jinja2.ext.do", "jinja2.ext.loopcontrols"],
-        )
-
-        # 允许子类自定义环境
-        self._customize_jinja_env(env)
-
         try:
-            template = env.from_string(self.chat_template)
-            rendered_prompt = template.render(**context)
+            rendered_prompt = self._compiled_template.render(**context)
             return rendered_prompt
         except Exception as e:
             logging.error(f"构建提示文本失败: {str(e)}")

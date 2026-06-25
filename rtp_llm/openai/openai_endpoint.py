@@ -1,6 +1,7 @@
 import itertools
 import json
 import logging
+import time
 from functools import partial
 from typing import Any, AsyncGenerator, List, Optional
 
@@ -153,6 +154,19 @@ class OpenaiEndpoint(object):
             f"use stop_words_str_list [{self.stop_words_str_list}], "
             f"stop_words_id_list [{self.stop_words_id_list}]"
         )
+
+        # 预热 _extract_generation_config 中的懒加载，消除首请求 ~17ms 冷启动
+        self._warmup_extract_config()
+
+    def _warmup_extract_config(self):
+        """Pre-trigger lazy initialization in tokenize_words / convert_select_tokens / add_thinking_params
+        so that per-worker first-request latency is eliminated."""
+        warmup_config = GenerateConfig()
+        warmup_config.stop_words_str = list(self.stop_words_str_list)
+        self.chat_renderer.tokenize_words(warmup_config.stop_words_str)
+        warmup_config.convert_select_tokens(len(self.tokenizer), self.tokenizer)
+        warmup_config.add_thinking_params(self.tokenizer, self.generate_env_config)
+        logging.info("[PERF] _warmup_extract_config done")
 
     async def list_models(self):
         model_card = ModelCard(id=self.model_name)
@@ -476,11 +490,14 @@ class OpenaiEndpoint(object):
     def chat_completion(
         self, request_id: int, chat_request: ChatCompletionRequest, raw_request: Request
     ) -> CompleteResponseAsyncGenerator:
+        t0 = time.perf_counter()
         renderer = (
             self.template_renderer if chat_request.user_template else self.chat_renderer
         )
         rendered_input = self.render_chat(chat_request)
+        t1 = time.perf_counter()
         generate_config = self._extract_generation_config(chat_request)
+        t2 = time.perf_counter()
 
         mm_inputs = rendered_input.multimodal_inputs
 
@@ -493,6 +510,13 @@ class OpenaiEndpoint(object):
             self._get_debug_info(renderer, rendered_input, generate_config)
             if chat_request.debug_info
             else None
+        )
+
+        logging.info(
+            f"[PERF] request_id={request_id} chat_pre_process: "
+            f"render_chat={((t1-t0)*1000):.2f}ms (template+tokenize, "
+            f"input_tokens={len(rendered_input.input_ids)}), "
+            f"extract_config={((t2-t1)*1000):.2f}ms"
         )
 
         choice_generator = renderer.generate_choice(
