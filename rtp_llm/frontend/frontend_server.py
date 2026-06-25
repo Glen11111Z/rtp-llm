@@ -443,8 +443,11 @@ class FrontendServer(object):
                 iter_count += 1
                 yield response
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
+            total_rt = current_time_ms() - start_time
+            logging.info(f"[PERF] py_rtp_framework_rt={total_rt:.2f}ms "
+                         f"(iter_count={iter_count}, first_token_to_end={(current_time_ms() - start_time):.2f}ms)")
             kmonitor.report(
-                GaugeMetrics.LANTENCY_METRIC, current_time_ms() - start_time
+                GaugeMetrics.LANTENCY_METRIC, total_rt
             )
             kmonitor.report(
                 AccMetrics.SUCCESS_QPS_METRIC,
@@ -457,6 +460,7 @@ class FrontendServer(object):
 
         assert self._frontend_worker is not None
         start_time = current_time_ms()
+        logging.info(f"[PERF] _call_generate_with_report start at {start_time:.0f}ms")
         response_generator = generate_call()
         return CompleteResponseAsyncGenerator(
             __gen_response_with_report(start_time, response_generator),

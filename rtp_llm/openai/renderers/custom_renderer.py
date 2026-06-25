@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
@@ -437,6 +438,7 @@ class CustomChatRenderer:
 
         token_type_ids = []
         input_id_tensor = torch.Tensor(input_ids).int().unsqueeze(0)
+        t_enqueue_start = time.perf_counter()
         output_generator: AsyncGenerator[GenerateOutputs, None] = (
             await backend_rpc_server_visitor.enqueue(
                 GenerateInput(
@@ -448,6 +450,11 @@ class CustomChatRenderer:
                     token_type_ids=token_type_ids,
                 )
             )
+        )
+        t_enqueue_end = time.perf_counter()
+        logging.info(
+            f"[PERF] request_id={request_id} generate_choice: "
+            f"enqueue={((t_enqueue_end-t_enqueue_start)*1000):.2f}ms"
         )
 
         prompt_logits_data = None

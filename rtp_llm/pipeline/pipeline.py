@@ -251,8 +251,11 @@ class Pipeline(object):
                 generate_config.sp_advice_prompt
             )
 
+        pre_pipeline_rt = current_time_ms() - begin_time
+        logging.info(f"[PERF] request_id={request_id} pre_pipeline_rt={pre_pipeline_rt:.2f}ms "
+                     f"(tokenize+validate, input_tokens={len(token_ids)})")
         kmonitor.report(
-            GaugeMetrics.PRE_PIPELINE_RT_METRIC, current_time_ms() - begin_time
+            GaugeMetrics.PRE_PIPELINE_RT_METRIC, pre_pipeline_rt
         )
         kmonitor.report(GaugeMetrics.NUM_BEAMS_METRIC, generate_config.max_num_beams())
         kmonitor.report(GaugeMetrics.INPUT_TOKEN_SIZE_METRIC, len(token_ids))
@@ -522,9 +525,11 @@ class Pipeline(object):
         stop_word_ids = generate_config.stop_words_list
         stop_word_id_slices = get_stop_word_slices(stop_word_ids)
 
+        enqueue_begin = current_time_ms()
         stream: AsyncGenerator[GenerateOutputs, None] = (
             await self.backend_rpc_server_visitor.enqueue(input)
         )
+        logging.info(f"[PERF] request_id={request_id} enqueue_rt={current_time_ms() - enqueue_begin:.2f}ms")
 
         decoding_states: List[DecodingState] = []
         ouput_tokens_list: List[torch.Tensor] = []
@@ -584,8 +589,11 @@ class Pipeline(object):
                     **kwargs,
                 )
 
+            post_pipeline_rt = current_time_ms() - begin_time
+            logging.info(f"[PERF] request_id={request_id} post_pipeline_rt={post_pipeline_rt:.2f}ms "
+                         f"(detokenize, incremental={is_incremental})")
             kmonitor.report(
-                GaugeMetrics.POST_PIPELINE_RT_METRIC, current_time_ms() - begin_time
+                GaugeMetrics.POST_PIPELINE_RT_METRIC, post_pipeline_rt
             )
 
             yield GenerateResponse(
