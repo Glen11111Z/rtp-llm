@@ -570,11 +570,17 @@ class PyFlashinferPagedPrefillImpl(PyFlashinferPrefillImplBase):
 
         Returns True if:
         1. Not running on SM 10.0 (Blackwell) architecture
-        2. The underlying paged FMHA op supports the inputs
-        3. MhaRotaryEmbeddingOp supports the inputs
+        2. KV cache block ids are available for paged attention
+        3. The underlying paged FMHA op supports the inputs
+        4. MhaRotaryEmbeddingOp supports the inputs
         """
+        kv_cache_block_id = getattr(attn_inputs, "kv_cache_kernel_block_id", None)
+        has_kv_cache_block_id = (
+            kv_cache_block_id is not None and kv_cache_block_id.numel() > 0
+        )
         return (
             not is_sm_100()
+            and has_kv_cache_block_id
             and PyFlashinferPrefillPagedAttnOp.support(attn_inputs)
             and attn_configs.rope_config.style != RopeStyle.Mrope
         )
