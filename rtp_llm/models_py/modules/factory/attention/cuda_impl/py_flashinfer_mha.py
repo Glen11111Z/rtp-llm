@@ -39,6 +39,14 @@ from rtp_llm.ops.compute_ops import (
 # Constants
 DEFAULT_PY_FLASHINFER_WORKSPACE_SIZE_MB = 128
 
+
+def _get_kv_cache_kernel_block_id(attn_inputs: PyAttentionInputs) -> torch.Tensor:
+    kv_cache_block_id = getattr(attn_inputs, "kv_cache_kernel_block_id", None)
+    if kv_cache_block_id is None:
+        return torch.empty(0, dtype=torch.int32)
+    return kv_cache_block_id
+
+
 # Global workspace buffer pool
 _g_py_flashinfer_workspace_pool: list[torch.Tensor] = []
 _g_py_flashinfer_pool_lock = __import__("threading").Lock()
@@ -118,11 +126,12 @@ class PyFlashinferPrefillPagedAttnOp(object):
         forbid_realloc: True only when called from prepare_cuda_graph (replay); forbids buffer realloc.
         """
         check_attention_inputs(attn_inputs)
+        kv_cache_block_id = _get_kv_cache_kernel_block_id(attn_inputs)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id,
+            kv_cache_block_id,
             self.page_size,
             forbid_realloc,
         )
@@ -365,11 +374,12 @@ class PyFlashinferPrefillAttnOp(object):
         batch_size = attn_inputs.input_lengths.size(0)
         cu_seqlens = attn_inputs.cu_seqlens_device[: batch_size + 1]
 
+        kv_cache_block_id = _get_kv_cache_kernel_block_id(attn_inputs)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id,
+            kv_cache_block_id,
             self.page_size,
         )
 
@@ -728,11 +738,12 @@ class PyFlashinferDecodeAttnOp(object):
 
         forbid_realloc: True only when called from prepare_cuda_graph (replay); forbids buffer realloc.
         """
+        kv_cache_block_id = _get_kv_cache_kernel_block_id(attn_inputs)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id,
+            kv_cache_block_id,
             self.seq_size_per_block,
             forbid_realloc=forbid_realloc,
         )
@@ -762,11 +773,12 @@ class PyFlashinferDecodeAttnOp(object):
 
     def prepare_for_cuda_graph_replay(self, attn_inputs: PyAttentionInputs) -> None:
         """Refresh FlashInfer runtime buffers before replaying the captured graph."""
+        kv_cache_block_id = _get_kv_cache_kernel_block_id(attn_inputs)
         self.fmha_params.fill_params(
             attn_inputs.prefix_lengths,
             attn_inputs.sequence_lengths,
             attn_inputs.input_lengths,
-            attn_inputs.kv_cache_kernel_block_id,
+            kv_cache_block_id,
             self.seq_size_per_block,
             forbid_realloc=True,
         )

@@ -111,6 +111,19 @@ def flashinfer_deps():
         name = "flashinfer",
         actual = "@flashinfer_cpp//:flashinfer"
     )
+    # Expose flashinfer sub shared libs as aliases so that wheel packaging
+    # can copy them next to librtp_compute_ops.so (RPATH=$ORIGIN).
+    for _so in [
+        "flashinfer_single_prefill",
+        "flashinfer_single_decode",
+        "flashinfer_batch_paged_prefill",
+        "flashinfer_batch_paged_decode",
+        "flashinfer_batch_ragged_prefill",
+    ]:
+        native.alias(
+            name = _so,
+            actual = "@flashinfer_cpp//:" + _so,
+        )
 
 def flashmla_deps():
     native.alias(
