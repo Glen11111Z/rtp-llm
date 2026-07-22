@@ -78,18 +78,55 @@ grpc::Status LocalRpcServer::pollStreamOutput(grpc::ServerContext*             c
                                               WriterInterface*                 writer,
                                               std::shared_ptr<GenerateStream>& stream) {
     RTP_LLM_PROFILE_FUNCTION();
+    auto nowUs = []() {
+        return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    int64_t poll_start_us = nowUs();
+    int64_t output_count  = 0;
+    RTP_LLM_LOG_INFO("[PERF] request [%s] poll_stream_start: stream_id=%ld", request_key.c_str(), stream->streamId());
     // 需要检查 !hasError(): 之前 finished() 表示完成且无错，现在 FINISHED 状态可能包含错误
     // 如果流有错误，应该停止消费输出
     while (stream->isActive() || stream->hasOutput()) {
+        int64_t next_output_start_us = nowUs();
         const auto result = stream->nextOutput();
+        int64_t next_output_us = nowUs() - next_output_start_us;
+        if (next_output_us > 100000) {
+            RTP_LLM_LOG_WARNING(
+                "[PERF] request [%s] poll_stream_next_output_slow: rt_us=%ld, stream_id=%ld, "
+                "is_active=%d, has_output=%d, is_finished=%d",
+                request_key.c_str(),
+                next_output_us,
+                stream->streamId(),
+                stream->isActive(),
+                stream->hasOutput(),
+                stream->isFinished());
+        }
         if (!result.ok()) {
             if (result.status().code() != ErrorCode::FINISHED) {
                 return serializeErrorMsg(request_key, result.status());
             } else {
+                RTP_LLM_LOG_INFO(
+                    "[PERF] request [%s] poll_stream_finished_signal: next_output_us=%ld, outputs=%ld, total_us=%ld",
+                    request_key.c_str(),
+                    next_output_us,
+                    output_count,
+                    nowUs() - poll_start_us);
                 break;
             }
         }
         RTP_LLM_LOG_DEBUG("request [%s] generate next output success", request_key.c_str());
+        output_count++;
+        RTP_LLM_LOG_INFO(
+            "[PERF] request [%s] poll_stream_output: index=%ld, next_output_us=%ld, stream_id=%ld, "
+            "finished=%d, output_len=%d, iter_count=%ld",
+            request_key.c_str(),
+            output_count,
+            next_output_us,
+            stream->streamId(),
+            result.value().generate_outputs.empty() ? -1 : result.value().generate_outputs[0].finished,
+            stream->outputTokenLen(),
+            stream->iterCount());
         GenerateOutputsPB outputs_pb;
 
         QueryConverter::transResponse(&outputs_pb,
@@ -102,11 +139,18 @@ grpc::Status LocalRpcServer::pollStreamOutput(grpc::ServerContext*             c
             RTP_LLM_LOG_WARNING("request [%s] cancelled by user", request_key.c_str());
             return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled by user");
         }
+        int64_t write_start_us = nowUs();
         if (!writer->Write(outputs_pb)) {
             stream->reportError(ErrorCode::CANCELLED, "write outputs pb failed");
             RTP_LLM_LOG_WARNING("request [%s] write outputs pb failed", request_key.c_str());
             return grpc::Status(grpc::StatusCode::INTERNAL, "request write outputs pb failed");
         }
+        RTP_LLM_LOG_INFO(
+            "[PERF] request [%s] poll_stream_write_done: index=%ld, write_us=%ld, total_us=%ld",
+            request_key.c_str(),
+            output_count,
+            nowUs() - write_start_us,
+            nowUs() - poll_start_us);
         if (stream->hasEvent(StreamEvents::NeedRemoteGenerate)) {
             break;
         }
@@ -115,7 +159,8 @@ grpc::Status LocalRpcServer::pollStreamOutput(grpc::ServerContext*             c
             break;
         }
     }
-    RTP_LLM_LOG_DEBUG("request [%s] local generate done", request_key.c_str());
+    RTP_LLM_LOG_INFO(
+        "[PERF] request [%s] local generate done: outputs=%ld, total_us=%ld", request_key.c_str(), output_count, nowUs() - poll_start_us);
 
     return grpc::Status::OK;
 }
@@ -180,8 +225,19 @@ grpc::Status LocalRpcServer::GenerateStreamCall(grpc::ServerContext*            
 
     RTP_LLM_LOG_DEBUG("request [%ld] enqueue success", request_id);
 
+    int64_t rpc_poll_start_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
     generate_context.error_status =
         pollStreamOutput(context, generate_context.request_key, writer, generate_context.getStream());
+    int64_t rpc_poll_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count()
+                          - rpc_poll_start_us;
+    RTP_LLM_LOG_INFO("[PERF] request [%ld] generate_stream_call_done: poll_us=%ld, status=%s",
+                     request_id,
+                     rpc_poll_us,
+                     generate_context.error_status.error_message().c_str());
     meta_->dequeue(generate_context.request_id, generate_context.getStream());
     return generate_context.error_status;
 }

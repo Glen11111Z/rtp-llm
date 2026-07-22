@@ -1,12 +1,48 @@
 #include "rtp_llm/cpp/normal_engine/NormalGenerateStream.h"
+#include <chrono>
 
 namespace rtp_llm {
 
 ErrorResult<GenerateOutputs> NormalGenerateStream::nextOutput() {
     // TODO(xinfei.sxf) 某些case下会出现1s的等待
+    auto nowUs = []() {
+        return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    int64_t wait_total_us = 0;
+    int     wait_count    = 0;
     while ((!hasError()) && getStatus() != StreamState::FINISHED && generate_outputs_queue_.isEmpty()) {
         checkTimeout();
+        int64_t wait_start_us = nowUs();
         generate_outputs_queue_.waitNotEmpty();
+        int64_t wait_us = nowUs() - wait_start_us;
+        wait_total_us += wait_us;
+        wait_count++;
+        if (wait_us > 100000) {
+            RTP_LLM_LOG_WARNING(
+                "[PERF] stream_next_output_wait_slow: request_id=%ld, stream_id=%ld, wait_us=%ld, "
+                "wait_total_us=%ld, wait_count=%d, status=%s, has_error=%d, queue_empty=%d",
+                request_id_,
+                streamId(),
+                wait_us,
+                wait_total_us,
+                wait_count,
+                StreamStateToString(getStatus()).c_str(),
+                hasError(),
+                generate_outputs_queue_.isEmpty());
+        }
+    }
+    if (wait_total_us > 0) {
+        RTP_LLM_LOG_INFO(
+            "[PERF] stream_next_output_wait_done: request_id=%ld, stream_id=%ld, wait_total_us=%ld, "
+            "wait_count=%d, status=%s, has_error=%d, queue_empty=%d",
+            request_id_,
+            streamId(),
+            wait_total_us,
+            wait_count,
+            StreamStateToString(getStatus()).c_str(),
+            hasError(),
+            generate_outputs_queue_.isEmpty());
     }
     if (hasError()) {
         return statusInfo();

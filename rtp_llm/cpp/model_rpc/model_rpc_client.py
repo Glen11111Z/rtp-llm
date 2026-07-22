@@ -1,5 +1,6 @@
 import functools
 import logging
+import time
 from typing import AsyncGenerator, Optional
 
 import grpc
@@ -534,19 +535,56 @@ class ModelRpcClient(object):
             response_iterator = stub.GenerateStreamCall(
                 input_pb, timeout=grpc_timeout_seconds
             )
-            # 调用服务器方法并接收流式响应
-            async for response in response_iterator.__aiter__():
+            logging.info(
+                f"[PERF] request_id={input_py.request_id} grpc_client_stream_start: "
+                f"target={target_address}, timeout_ms={input_py.generate_config.timeout_ms}"
+            )
+            response_count = 0
+            stream_start = time.perf_counter()
+            next_wait_start = stream_start
+            response_aiter = response_iterator.__aiter__()
+            while True:
+                try:
+                    response = await response_aiter.__anext__()
+                except StopAsyncIteration:
+                    logging.info(
+                        f"[PERF] request_id={input_py.request_id} grpc_client_stream_done: "
+                        f"total={((time.perf_counter() - stream_start) * 1000):.2f}ms, "
+                        f"wait_since_last={((time.perf_counter() - next_wait_start) * 1000):.2f}ms, "
+                        f"responses={response_count}"
+                    )
+                    break
+                response_count += 1
+                logging.info(
+                    f"[PERF] request_id={input_py.request_id} grpc_client_response: "
+                    f"index={response_count}, wait={((time.perf_counter() - next_wait_start) * 1000):.2f}ms"
+                )
                 yield trans_output(input_py, response, stream_state)
+                logging.info(
+                    f"[PERF] request_id={input_py.request_id} grpc_client_consumer_resumed: "
+                    f"index={response_count}, elapsed={((time.perf_counter() - stream_start) * 1000):.2f}ms"
+                )
+                next_wait_start = time.perf_counter()
         except grpc.RpcError as e:
             if response_iterator:
+                cancel_start = time.perf_counter()
                 response_iterator.cancel()
+                logging.info(
+                    f"[PERF] request_id={input_py.request_id} grpc_client_rpc_error_cancel: "
+                    f"rt={((time.perf_counter() - cancel_start) * 1000):.2f}ms"
+                )
             self._handle_grpc_error(e, f"request: [{input_pb.request_id}]")
         except Exception as e:
             logging.error(f"rpc unknown error:{str(e)}")
             raise e
         finally:
             if response_iterator:
+                cancel_start = time.perf_counter()
                 response_iterator.cancel()
+                logging.info(
+                    f"[PERF] request_id={input_py.request_id} grpc_client_iterator_cancel: "
+                    f"rt={((time.perf_counter() - cancel_start) * 1000):.2f}ms"
+                )
 
     async def batch_enqueue(self, inputs: list[GenerateInput]) -> list[GenerateOutputs]:
         if not inputs:
