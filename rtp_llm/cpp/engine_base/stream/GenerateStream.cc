@@ -958,6 +958,23 @@ void GenerateStream::reportStreamMetrics() {
             collector.batch_with_prefill_times = batch_with_prefill_times_;
             collector.batch_with_prefill_len   = batch_with_prefill_len_;
             collector.malloc_failed_times      = stream_cache_resource_->mallocFailedTimes();
+            if (cancelled) {
+                RTP_LLM_LOG_WARNING(
+                    "[PERF] stream_cancelled: stream_id=%ld, request_id=%ld, total_latency_us=%ld, "
+                    "first_token_latency_us=%ld, wait_latency_us=%ld, pause_latency_us=%ld, "
+                    "input_len=%d, output_len=%d, iter_count=%ld, query_batch_size=%ld, status=%s",
+                    streamId(),
+                    generate_input_->request_id,
+                    collector.total_latency_us,
+                    collector.first_token_latency_us,
+                    collector.wait_latency_us,
+                    collector.pause_latency_us,
+                    inputLength(),
+                    outputTokenLen(),
+                    collector.iterate_count,
+                    collector.query_batch_size,
+                    statusInfo().ToString().c_str());
+            }
             if (timeout) {
                 collector.timeout_latency_us = getTimeoutMs() * 1000;
             }

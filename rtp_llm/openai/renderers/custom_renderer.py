@@ -470,7 +470,7 @@ class CustomChatRenderer:
         if generate_config.return_prompt_logits:
             last_response = None
             async for response in self.render_response_stream(
-                output_generator, request, generate_config
+                output_generator, request, generate_config, request_id
             ):
                 if last_response is not None:
                     yield last_response
@@ -481,7 +481,7 @@ class CustomChatRenderer:
                 yield last_response
         else:
             async for response in self.render_response_stream(
-                output_generator, request, generate_config
+                output_generator, request, generate_config, request_id
             ):
                 yield response
 
@@ -1027,6 +1027,7 @@ class CustomChatRenderer:
         output_generator: AsyncGenerator[GenerateOutputs, None],
         request: ChatCompletionRequest,
         generate_config: GenerateConfig,
+        request_id: Optional[int] = None,
     ) -> AsyncGenerator[StreamResponseObject, None]:
         stop_word_slice_list = get_stop_word_slices(generate_config.stop_words_str)
         nums_output = request.n if request.n is not None else 1
@@ -1051,9 +1052,32 @@ class CustomChatRenderer:
             )
             for _ in range(nums_output)
         ]
+        first_output_wait_start = time.perf_counter()
         async for outputs in output_generator:
+            output_arrive_time = time.perf_counter()
             if index == 0:
-                yield await self._generate_first(nums_output)
+                backend_first_token_ms = None
+                backend_wait_ms = None
+                if outputs.generate_outputs:
+                    aux_info = outputs.generate_outputs[0].aux_info
+                    if aux_info is not None:
+                        backend_first_token_ms = aux_info.first_token_cost_time
+                        backend_wait_ms = aux_info.wait_time
+                logging.info(
+                    f"[PERF] request_id={request_id} renderer_first_backend_output: "
+                    f"wait_output={((output_arrive_time - first_output_wait_start) * 1000):.2f}ms, "
+                    f"backend_first_token={backend_first_token_ms}ms, "
+                    f"backend_wait={backend_wait_ms}ms, "
+                    f"outputs={len(outputs.generate_outputs)}"
+                )
+                generate_first_start = time.perf_counter()
+                first_response = await self._generate_first(nums_output)
+                logging.info(
+                    f"[PERF] request_id={request_id} renderer_generate_first_chunk: "
+                    f"rt={((time.perf_counter() - generate_first_start) * 1000):.2f}ms, "
+                    f"nums_output={nums_output}"
+                )
+                yield first_response
             index += 1
             if len(outputs.generate_outputs) != nums_output:
                 raise Exception(
@@ -1074,7 +1098,15 @@ class CustomChatRenderer:
                         output, generate_config
                     )
                 delta_list.append(delta)
-            yield await self._generate_stream_response(delta_list, think_status_list)
+            render_response_start = time.perf_counter()
+            stream_response = await self._generate_stream_response(delta_list, think_status_list)
+            if index == 1:
+                logging.info(
+                    f"[PERF] request_id={request_id} renderer_first_token_chunk: "
+                    f"rt={((time.perf_counter() - render_response_start) * 1000):.2f}ms, "
+                    f"delta_count={len(delta_list)}"
+                )
+            yield stream_response
             if self._check_all_finished(status_list):
                 break
         if index != 0:

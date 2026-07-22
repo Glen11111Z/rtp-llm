@@ -186,11 +186,25 @@ class FrontendServer(object):
         response: CompleteResponseAsyncGenerator,
     ):
         is_openai_response = request.get("stream", False)
+        request_id = request.get(request_id_field_name, "unknown")
         response_data_prefix = "data: " if is_openai_response else "data:"
+        first_chunk = True
+        chunk_count = 0
+        stream_start = current_time_ms()
         try:
             async for res in response:
+                serialize_start = current_time_ms()
                 data_str = res.model_dump_json(exclude_none=True)
+                serialize_rt = current_time_ms() - serialize_start
+                if first_chunk:
+                    first_chunk = False
+                    logging.info(
+                        f"[PERF] request_id={request_id} stream_response_first_chunk: "
+                        f"serialize={serialize_rt:.2f}ms, bytes={len(data_str)}, "
+                        f"is_openai_response={is_openai_response}"
+                    )
                 yield response_data_prefix + data_str + "\r\n\r\n"
+                chunk_count += 1
                 await asyncio.sleep(0)
             if not is_openai_response:
                 yield f"data:[done]\r\n\r\n"
@@ -198,6 +212,12 @@ class FrontendServer(object):
                 request, response
             )
         except asyncio.CancelledError as e:
+            logging.warning(
+                f"[PERF] request_id={request_id} stream_response_cancelled: "
+                f"elapsed={current_time_ms() - stream_start:.2f}ms, "
+                f"chunks_written={chunk_count}, first_chunk_written={not first_chunk}, "
+                f"is_openai_response={is_openai_response}, source={request.get('source', 'unknown')}"
+            )
             self._access_logger.log_exception_access(request, e)
             kmonitor.report(
                 AccMetrics.CANCEL_QPS_METRIC,
@@ -400,52 +420,73 @@ class FrontendServer(object):
         return rep
 
     async def _call_generate_with_report(
-        self, generate_call: Callable[[], CompleteResponseAsyncGenerator]
+        self,
+        generate_call: Callable[[], CompleteResponseAsyncGenerator],
+        req: Dict[str, Any] = None,
     ):
+        request_id = req.get(request_id_field_name, "unknown") if req else "unknown"
+
         async def __gen_response_with_report(start_time: float, response_generator):
             last_iterate_time = current_time_ms()
             first_token = True
             iter_count = 0
-            async for response in response_generator:
-                end_time = current_time_ms()
-                if first_token:
-                    first_token = False
-                    kmonitor.report(
-                        GaugeMetrics.RESPONSE_FIRST_TOKEN_RT_METRIC,
-                        end_time - last_iterate_time,
-                    )
-                else:
-                    step_output_len = 1
-                    if hasattr(response, "aux_info"):
-                        if isinstance(response.aux_info, list):
-                            step_output_len = 0
-                            for info in response.aux_info:
-                                step_output_len += info.get("step_output_len", 1)
-                        elif isinstance(response.aux_info, dict):
-                            step_output_len = max(
-                                response.aux_info.get("step_output_len", 1),
-                                step_output_len,
-                            )
+            try:
+                async for response in response_generator:
+                    end_time = current_time_ms()
+                    if first_token:
+                        first_token = False
+                        first_token_rt = end_time - last_iterate_time
+                        kmonitor.report(
+                            GaugeMetrics.RESPONSE_FIRST_TOKEN_RT_METRIC,
+                            first_token_rt,
+                        )
+                        logging.info(
+                            f"[PERF] request_id={request_id} py_response_first_chunk: "
+                            f"wait_generator={first_token_rt:.2f}ms, "
+                            f"since_call_start={end_time - start_time:.2f}ms"
+                        )
+                    else:
+                        step_output_len = 1
+                        if hasattr(response, "aux_info"):
+                            if isinstance(response.aux_info, list):
+                                step_output_len = 0
+                                for info in response.aux_info:
+                                    step_output_len += info.get("step_output_len", 1)
+                            elif isinstance(response.aux_info, dict):
+                                step_output_len = max(
+                                    response.aux_info.get("step_output_len", 1),
+                                    step_output_len,
+                                )
 
+                        kmonitor.report(
+                            GaugeMetrics.RESPONSE_ITER_RT_METRIC,
+                            (end_time - last_iterate_time) / step_output_len,
+                        )
                     kmonitor.report(
-                        GaugeMetrics.RESPONSE_ITER_RT_METRIC,
-                        (end_time - last_iterate_time) / step_output_len,
+                        AccMetrics.ITER_QPS_METRIC,
+                        1,
+                        {
+                            "rank_id": self.rank_id,
+                            "server_id": self.server_id,
+                        },
                     )
-                kmonitor.report(
-                    AccMetrics.ITER_QPS_METRIC,
-                    1,
-                    {
-                        "rank_id": self.rank_id,
-                        "server_id": self.server_id,
-                    },
+                    last_iterate_time = end_time
+                    iter_count += 1
+                    yield response
+            except asyncio.CancelledError:
+                logging.warning(
+                    f"[PERF] request_id={request_id} py_response_generator_cancelled: "
+                    f"elapsed={current_time_ms() - start_time:.2f}ms, "
+                    f"wait_current_iter={current_time_ms() - last_iterate_time:.2f}ms, "
+                    f"iter_count={iter_count}, first_chunk_received={not first_token}"
                 )
-                last_iterate_time = end_time
-                iter_count += 1
-                yield response
+                raise
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
             total_rt = current_time_ms() - start_time
-            logging.info(f"[PERF] py_rtp_framework_rt={total_rt:.2f}ms "
-                         f"(iter_count={iter_count}, first_token_to_end={(current_time_ms() - start_time):.2f}ms)")
+            logging.info(
+                f"[PERF] request_id={request_id} py_rtp_framework_rt={total_rt:.2f}ms "
+                f"(iter_count={iter_count}, first_token_to_end={(current_time_ms() - start_time):.2f}ms)"
+            )
             kmonitor.report(
                 GaugeMetrics.LANTENCY_METRIC, total_rt
             )
@@ -460,8 +501,13 @@ class FrontendServer(object):
 
         assert self._frontend_worker is not None
         start_time = current_time_ms()
-        logging.info(f"[PERF] _call_generate_with_report start at {start_time:.0f}ms")
+        logging.info(f"[PERF] request_id={request_id} _call_generate_with_report start at {start_time:.0f}ms")
+        generate_call_start = current_time_ms()
         response_generator = generate_call()
+        logging.info(
+            f"[PERF] request_id={request_id} generate_call_return: "
+            f"sync_rt={current_time_ms() - generate_call_start:.2f}ms"
+        )
         return CompleteResponseAsyncGenerator(
             __gen_response_with_report(start_time, response_generator),
             response_generator._collect_complete_response_func,
@@ -487,6 +533,8 @@ class FrontendServer(object):
         generate_call: Callable[[], CompleteResponseAsyncGenerator],
     ):
         assert self._frontend_worker is not None
+        infer_start = current_time_ms()
+        request_id = req.get(request_id_field_name, "unknown")
         kmonitor.report(
             AccMetrics.QPS_METRIC,
             1,
@@ -499,8 +547,13 @@ class FrontendServer(object):
         self._access_logger.log_query_access(req)
         is_streaming = self._frontend_worker.is_streaming(req)
         if await raw_request.is_disconnected():
+            logging.warning(
+                f"[PERF] request_id={request_id} infer_cancelled_before_generate: "
+                f"elapsed={current_time_ms() - infer_start:.2f}ms, is_streaming={is_streaming}, "
+                f"source={req.get('source', 'unknown')}"
+            )
             raise asyncio.CancelledError("client disconnects")
-        res = await self._call_generate_with_report(generate_call)
+        res = await self._call_generate_with_report(generate_call, req)
 
         if is_streaming:
             return StreamingResponse(
@@ -509,6 +562,11 @@ class FrontendServer(object):
         async for x in res:
             if await raw_request.is_disconnected():
                 # Abort the request if the client disconnects.
+                logging.warning(
+                    f"[PERF] request_id={request_id} infer_cancelled_non_streaming: "
+                    f"elapsed={current_time_ms() - infer_start:.2f}ms, "
+                    f"source={req.get('source', 'unknown')}"
+                )
                 await res.aclose()
                 raise asyncio.CancelledError("client disconnects")
 
