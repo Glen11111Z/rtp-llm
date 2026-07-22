@@ -437,6 +437,7 @@ class OpenaiEndpoint(object):
         choice_generator: AsyncGenerator[StreamResponseObject, None],
         debug_info: Optional[DebugInfo],
         tokenizer: Optional[Any] = None,
+        request_id: Optional[int] = None,
     ) -> CompleteResponseAsyncGenerator:
         # prompt_logits is attached by renderer.generate_choice on the last StreamResponseObject;
         # capture it here so collect_with_prompt_logits can attach it to the final ChatCompletionResponse.
@@ -444,8 +445,19 @@ class OpenaiEndpoint(object):
 
         async def response_generator():
             debug_info_responded = False
+            first_choice = True
+            choice_wait_start = time.perf_counter()
 
             async for response in choice_generator:
+                choice_arrive_time = time.perf_counter()
+                if first_choice:
+                    first_choice = False
+                    logging.info(
+                        f"[PERF] request_id={request_id} complete_stream_first_choice: "
+                        f"wait_choice={((choice_arrive_time - choice_wait_start) * 1000):.2f}ms, "
+                        f"has_debug_info={debug_info is not None}"
+                    )
+                wrap_start = time.perf_counter()
                 output = None
                 if (
                     debug_info is not None
@@ -462,13 +474,19 @@ class OpenaiEndpoint(object):
                 if response.prompt_logits is not None:
                     captured_prompt_logits["data"] = response.prompt_logits
 
-                yield ChatCompletionStreamResponse(
+                stream_response = ChatCompletionStreamResponse(
                     choices=response.choices,
                     usage=response.usage,
                     aux_info=response.aux_info,
                     debug_info=debug_info if not debug_info_responded else output,
                     extra_outputs=response.extra_outputs,
                 )
+                if not debug_info_responded:
+                    logging.info(
+                        f"[PERF] request_id={request_id} complete_stream_wrap_first_response: "
+                        f"rt={((time.perf_counter() - wrap_start) * 1000):.2f}ms"
+                    )
+                yield stream_response
                 debug_info_responded = True
 
         async def collect_with_prompt_logits(generator):
@@ -576,7 +594,7 @@ class OpenaiEndpoint(object):
         )
 
         return self._complete_stream_response(
-            choice_generator, debug_info, self.tokenizer
+            choice_generator, debug_info, self.tokenizer, request_id
         )
 
     def _prepare_chat_input(self, request_id: int, chat_request):

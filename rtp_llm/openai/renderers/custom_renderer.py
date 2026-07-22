@@ -436,6 +436,11 @@ class CustomChatRenderer:
         request: ChatCompletionRequest,
     ) -> AsyncGenerator[StreamResponseObject, None]:
 
+        logging.info(
+            f"[PERF] request_id={request_id} generate_choice_enter: "
+            f"input_len={len(input_ids)}, is_streaming={generate_config.is_streaming}, "
+            f"return_prompt_logits={generate_config.return_prompt_logits}"
+        )
         token_type_ids = []
         input_id_tensor = torch.Tensor(input_ids).int().unsqueeze(0)
         t_enqueue_start = time.perf_counter()
@@ -465,7 +470,14 @@ class CustomChatRenderer:
 
         # 处理非流式请求的合并逻辑
         if not generate_config.is_streaming:
-            output_generator = await self._merge_non_streaming_outputs(output_generator)
+            merge_start = time.perf_counter()
+            output_generator = await self._merge_non_streaming_outputs(
+                output_generator, request_id
+            )
+            logging.info(
+                f"[PERF] request_id={request_id} non_stream_merge_return: "
+                f"rt={((time.perf_counter() - merge_start) * 1000):.2f}ms"
+            )
 
         if generate_config.return_prompt_logits:
             last_response = None
@@ -507,7 +519,9 @@ class CustomChatRenderer:
         return replay(), prompt_logits_data
 
     async def _merge_non_streaming_outputs(
-        self, output_generator: AsyncGenerator[GenerateOutputs, None]
+        self,
+        output_generator: AsyncGenerator[GenerateOutputs, None],
+        request_id: Optional[int] = None,
     ) -> AsyncGenerator[GenerateOutputs, None]:
         """
         合并非流式请求的多个输出为单个输出
@@ -520,11 +534,37 @@ class CustomChatRenderer:
         """
         # 收集所有输出
         collected_outputs = []
+        collect_start = time.perf_counter()
+        last_output_time = collect_start
         async for output in output_generator:
+            now = time.perf_counter()
+            if not collected_outputs:
+                first_aux_info = output.generate_outputs[0].aux_info if output.generate_outputs else None
+                logging.info(
+                    f"[PERF] request_id={request_id} non_stream_first_backend_output: "
+                    f"wait={((now - collect_start) * 1000):.2f}ms, "
+                    f"backend_first_token={getattr(first_aux_info, 'first_token_cost_time', None)}ms, "
+                    f"backend_wait={getattr(first_aux_info, 'wait_time', None)}ms, "
+                    f"outputs={len(output.generate_outputs)}"
+                )
             collected_outputs.append(output)
+            last_output_time = now
+        logging.info(
+            f"[PERF] request_id={request_id} non_stream_collect_done: "
+            f"total={((time.perf_counter() - collect_start) * 1000):.2f}ms, "
+            f"after_last_output={((time.perf_counter() - last_output_time) * 1000):.2f}ms, "
+            f"chunks={len(collected_outputs)}"
+        )
 
         # 合并输出
+        merge_start = time.perf_counter()
         merged_output = self._merge_generate_outputs(collected_outputs)
+        logging.info(
+            f"[PERF] request_id={request_id} non_stream_merge_outputs: "
+            f"rt={((time.perf_counter() - merge_start) * 1000):.2f}ms, "
+            f"chunks={len(collected_outputs)}, "
+            f"outputs={len(merged_output.generate_outputs)}"
+        )
 
         # 创建新的单次输出generator
         async def single_output_generator():
