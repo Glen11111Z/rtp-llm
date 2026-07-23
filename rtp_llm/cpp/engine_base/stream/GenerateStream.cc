@@ -974,6 +974,23 @@ void GenerateStream::reportStreamMetrics() {
                     collector.iterate_count,
                     collector.query_batch_size,
                     statusInfo().ToString().c_str());
+            } else if (!timeout) {
+                // Normal completion: log full latency breakdown for per-request diagnosis.
+                // pure_infer_us = first_token_latency_us - wait_latency_us (time actually on GPU)
+                RTP_LLM_LOG_INFO(
+                    "[PERF] stream_done: stream_id=%ld, request_id=%ld, total_latency_us=%ld, "
+                    "first_token_latency_us=%ld, wait_latency_us=%ld, pure_infer_us=%ld, "
+                    "input_len=%d, output_len=%d, iter_count=%ld, query_batch_size=%ld",
+                    streamId(),
+                    generate_input_->request_id,
+                    collector.total_latency_us,
+                    collector.first_token_latency_us,
+                    collector.wait_latency_us,
+                    collector.first_token_latency_us - collector.wait_latency_us,
+                    inputLength(),
+                    outputTokenLen(),
+                    collector.iterate_count,
+                    collector.query_batch_size);
             }
             if (timeout) {
                 collector.timeout_latency_us = getTimeoutMs() * 1000;
