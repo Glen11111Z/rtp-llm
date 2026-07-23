@@ -229,6 +229,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def("from_json", &GrpcConfig::from_json, "Initialize from JSON string")
         .def("get_client_config", &GrpcConfig::get_client_config)
         .def("get_server_config", &GrpcConfig::get_server_config)
+        .def_readwrite("num_cqs", &GrpcConfig::num_cqs)
+        .def_readwrite("min_pollers", &GrpcConfig::min_pollers)
+        .def_readwrite("max_pollers", &GrpcConfig::max_pollers)
         .def(py::pickle(
             [](const GrpcConfig& self) {
                 // Convert maps to Python dicts for serialization
@@ -242,10 +245,10 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 for (const auto& pair : server_config) {
                     server_dict[py::str(pair.first)] = pair.second;
                 }
-                return py::make_tuple(client_dict, server_dict);
+                return py::make_tuple(client_dict, server_dict, self.num_cqs, self.min_pollers, self.max_pollers);
             },
             [](py::tuple t) {
-                if (t.size() != 2)
+                if (t.size() < 2)
                     throw std::runtime_error("Invalid state!");
                 GrpcConfig c;
                 try {
@@ -272,6 +275,12 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                     }
                     oss << "}}";
                     c.from_json(oss.str());
+                    // Restore sync server options if present (5-tuple format)
+                    if (t.size() >= 5) {
+                        c.num_cqs     = t[2].cast<int>();
+                        c.min_pollers = t[3].cast<int>();
+                        c.max_pollers = t[4].cast<int>();
+                    }
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("GrpcConfig unpickle error: ") + e.what());
                 }

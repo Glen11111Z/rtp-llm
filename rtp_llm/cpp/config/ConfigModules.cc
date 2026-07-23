@@ -429,6 +429,11 @@ std::string GrpcConfig::to_string() const {
         oss << "  " << it->first << ": " << it->second << "\n";
     }
 
+    // Output sync server thread pool options
+    oss << "Sync Server Options: num_cqs=" << num_cqs
+        << ", min_pollers=" << min_pollers
+        << ", max_pollers=" << max_pollers << "\n";
+
     return oss.str();
 }
 

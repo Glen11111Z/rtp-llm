@@ -321,6 +321,19 @@ void RtpLLMOp::initRPCServer(const EngineInitParams                        maga_
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(model_rpc_service_.get());
 
+    // Configure sync server thread pool.
+    // Default gRPC values (num_cqs=1, max_pollers=2) give only 2 handler threads total,
+    // causing ~50ms queue wait when concurrent requests exceed 2.
+    // Set GRPC_MAX_POLLERS env var to match max_concurrent_requests.
+    builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::NUM_CQS,
+                                grpc_config.num_cqs);
+    builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MIN_POLLERS,
+                                grpc_config.min_pollers);
+    builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MAX_POLLERS,
+                                grpc_config.max_pollers);
+    RTP_LLM_LOG_INFO("grpc server sync thread pool: num_cqs=%d, min_pollers=%d, max_pollers=%d",
+                     grpc_config.num_cqs, grpc_config.min_pollers, grpc_config.max_pollers);
+
     grpc_server_ = builder.BuildAndStart();
     RTP_LLM_CHECK_WITH_INFO(grpc_server_ != nullptr, "grpc server start failed at address " + server_address);
 

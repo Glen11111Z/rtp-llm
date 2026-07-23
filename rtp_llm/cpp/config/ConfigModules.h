@@ -527,6 +527,13 @@ struct ArpcConfig {
 struct GrpcConfig {
     std::map<std::string, int> client_config;
     std::map<std::string, int> server_config;
+    // Sync server thread pool options (see grpc::ServerBuilder::SetSyncServerOption).
+    // Default gRPC values: num_cqs=1, min_pollers=1, max_pollers=2 (only 2 threads total!).
+    // For LLM servers with blocking GenerateStreamCall, increase max_pollers to avoid
+    // request queuing at the gRPC layer (each call blocks for inference duration ~60ms).
+    int num_cqs     = 1;
+    int min_pollers = 1;
+    int max_pollers = 2;
     GrpcConfig() {};
     GrpcConfig(const std::string& json_str);
     std::string                to_string() const;
