@@ -499,6 +499,17 @@ absl::Status NormalEngine::step() {
         if (streams.empty() && parallelism_config.tp_size <= 1) {
             return absl::OkStatus();
         }
+        if (!streams.empty()) {
+            std::string req_ids;
+            for (const auto& s : streams) {
+                if (s && !s->isFakeStream()) {
+                    if (!req_ids.empty()) req_ids += ",";
+                    req_ids += std::to_string(s->generateInput()->request_id);
+                }
+            }
+            RTP_LLM_LOG_INFO("[PERF] schedule_batch: batch_size=%zu, request_ids=[%s]",
+                             streams.size(), req_ids.c_str());
+        }
     }
 
     RTP_LLM_LOG_DEBUG(__PRETTY_FUNCTION__);
