@@ -1153,13 +1153,24 @@ class CustomChatRenderer:
             if self._check_all_finished(status_list):
                 break
         if index != 0:
-            yield await self._flush_buffer(
+            flush_start = time.perf_counter()
+            flush_response = await self._flush_buffer(
                 status_list,
                 generate_config.stop_words_str,
                 generate_config.is_streaming,
                 think_status_list,
             )
-            yield await self._generate_final(status_list, request, think_status_list)
+            flush_rt = (time.perf_counter() - flush_start) * 1000
+            final_start = time.perf_counter()
+            final_response = await self._generate_final(status_list, request, think_status_list)
+            final_rt = (time.perf_counter() - final_start) * 1000
+            logging.info(
+                f"[PERF] request_id={request_id} renderer_flush_final: "
+                f"flush_rt={flush_rt:.2f}ms, final_rt={final_rt:.2f}ms, "
+                f"total_post={((time.perf_counter() - flush_start) * 1000):.2f}ms"
+            )
+            yield flush_response
+            yield final_response
 
     def _create_empty_delta_sync(self, input_len: int, output_len: int, reuse_len: int):
         return OutputDelta(
