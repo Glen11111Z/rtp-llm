@@ -549,6 +549,13 @@ class CustomChatRenderer:
                 )
             collected_outputs.append(output)
             last_output_time = now
+            # 非流式止血：所有 beam 均已 finished，无需等待 generator 自然结束（避免等 C++ stream close 超时约 1s）
+            if output.generate_outputs and all(o.finished for o in output.generate_outputs):
+                logging.info(
+                    f"[PERF] request_id={request_id} non_stream_early_break: "
+                    f"chunks={len(collected_outputs)}, elapsed={(( now - collect_start) * 1000):.2f}ms"
+                )
+                break
         logging.info(
             f"[PERF] request_id={request_id} non_stream_collect_done: "
             f"total={((time.perf_counter() - collect_start) * 1000):.2f}ms, "
