@@ -1123,6 +1123,7 @@ class CustomChatRenderer:
                 raise Exception(
                     f"output num {len(outputs.generate_outputs)} != nums_output {nums_output}"
                 )
+            update_start = time.perf_counter()
             delta_list: List[OutputDelta] = []
             for status, output in zip(status_list, outputs.generate_outputs):
                 delta = await self._update_single_status(
@@ -1144,6 +1145,8 @@ class CustomChatRenderer:
                 logging.info(
                     f"[PERF] request_id={request_id} renderer_first_token_chunk: "
                     f"rt={((time.perf_counter() - render_response_start) * 1000):.2f}ms, "
+                    f"update_status_rt={((render_response_start - update_start) * 1000):.2f}ms, "
+                    f"since_output_arrive={((time.perf_counter() - output_arrive_time) * 1000):.2f}ms, "
                     f"delta_count={len(delta_list)}"
                 )
             yield stream_response
