@@ -67,7 +67,7 @@ def init_grpc_group_args(parser, grpc_config):
         env_name="GRPC_MAX_POLLERS",
         bind_to=(grpc_config, "max_pollers"),
         type=int,
-        default=2,
+        default=16,
         help="Max polling threads per completion queue for gRPC sync server. "
              "Increase to max_concurrent_requests to eliminate gRPC layer queuing.",
     )
