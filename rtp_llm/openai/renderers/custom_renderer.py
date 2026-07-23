@@ -1101,6 +1101,7 @@ class CustomChatRenderer:
             for _ in range(nums_output)
         ]
         first_output_wait_start = time.perf_counter()
+        first_response = None
         async for outputs in output_generator:
             output_arrive_time = time.perf_counter()
             if index == 0:
@@ -1125,7 +1126,9 @@ class CustomChatRenderer:
                     f"rt={((time.perf_counter() - generate_first_start) * 1000):.2f}ms, "
                     f"nums_output={nums_output}"
                 )
-                yield first_response
+                if generate_config.is_streaming:
+                    yield first_response   # 流式立即返回 role chunk
+                # 非流式：first_response 暂不 yield，等内容 chunk 准备好后合并
             index += 1
             if len(outputs.generate_outputs) != nums_output:
                 raise Exception(
@@ -1157,6 +1160,11 @@ class CustomChatRenderer:
                     f"since_output_arrive={((time.perf_counter() - output_arrive_time) * 1000):.2f}ms, "
                     f"delta_count={len(delta_list)}"
                 )
+                if not generate_config.is_streaming and first_response is not None:
+                    # 非流式：将 role 写入 content chunk，一次 yield 完成 ①+②
+                    for i, choice in enumerate(stream_response.choices):
+                        if i < len(first_response.choices):
+                            choice.delta.role = first_response.choices[i].delta.role
             yield stream_response
             if self._check_all_finished(status_list):
                 break
@@ -1177,8 +1185,14 @@ class CustomChatRenderer:
                 f"flush_rt={flush_rt:.2f}ms, final_rt={final_rt:.2f}ms, "
                 f"total_post={((time.perf_counter() - flush_start) * 1000):.2f}ms"
             )
-            yield flush_response
-            yield final_response
+            if generate_config.is_streaming:
+                yield flush_response   # 流式：单独返回 trailing text chunk ④
+                yield final_response   # 流式：单独返回 finish_reason+usage chunk ⑤
+            else:
+                # 非流式：将 flush 的尾部文字写入 final chunk，一次 yield 完成 ④+⑤
+                for fl_choice, fn_choice in zip(flush_response.choices, final_response.choices):
+                    fn_choice.delta.content = fl_choice.delta.content
+                yield final_response
 
     def _create_empty_delta_sync(self, input_len: int, output_len: int, reuse_len: int):
         return OutputDelta(
