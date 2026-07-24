@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <memory>
+#include <unordered_set>
 #include "rtp_llm/cpp/utils/StatusUtil.h"
 #include "rtp_llm/cpp/utils/ProfilingScope.h"
 #include "rtp_llm/cpp/models/ModelTypes.h"
@@ -128,6 +129,9 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
     GptModelInputs                 model_input;
     GptModelOutputs                model_output;
     SamplerOutput                  sampler_output;
+    int64_t                        kv_cache_update_us       = 0;
+    int64_t                        sampler_gather_input_us  = 0;
+    int64_t                        sampler_forward_us       = 0;
     RTP_LLM_PROFILE_FUNCTION();
     {
         RTP_LLM_PROFILE_SCOPE("executor.gather_model_input");
@@ -155,7 +159,9 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
         // update kv cache
         if (model_input.kv_cache_update_mapping.defined()) {
             RTP_LLM_PROFILE_SCOPE("executor.kv_cache_update");
+            int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
             cache_manager_->blockBatchCopy(model_input.kv_cache_update_mapping);
+            kv_cache_update_us = autil::TimeUtility::currentTimeInMicroSeconds() - start_time_us;
         }
     }
     {
@@ -190,17 +196,59 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
         int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
         CHECK_AND_RETURN_REF(sampler_input,
                              batch_stream_processor_->gatherSamplerInput(stream_groups, model_input, model_output));
-        sampler_output = std::move(sampler_->forward(sampler_input));
+        int64_t sampler_input_done_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        sampler_output                = std::move(sampler_->forward(sampler_input));
+        int64_t sampler_done_us       = autil::TimeUtility::currentTimeInMicroSeconds();
         RTP_LLM_LOG_DEBUG("sampler forward done");
-        executor_collector.sample_input_us = autil::TimeUtility::currentTimeInMicroSeconds() - start_time_us;
+        sampler_gather_input_us             = sampler_input_done_us - start_time_us;
+        sampler_forward_us                  = sampler_done_us - sampler_input_done_us;
+        executor_collector.sample_input_us  = sampler_done_us - start_time_us;
     }
     {
         RTP_LLM_PROFILE_SCOPE("executor.dispatch_output");
+        std::unordered_set<int64_t> streams_with_first_token;
+        for (const auto& stream : streams) {
+            if (stream && !stream->isFakeStream() && stream->getTimeInfo().first_token_rt_us > 0) {
+                streams_with_first_token.insert(stream->streamId());
+            }
+        }
         int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
         auto    result =
             batch_stream_processor_->dispatch(stream_groups, {std::move(model_output), std::move(sampler_output)});
         executor_collector.dispatch_output_us = autil::TimeUtility::currentTimeInMicroSeconds() - start_time_us;
         reportMetrics(stream_groups, executor_collector, tps_collector);
+        for (const auto& stream : streams) {
+            if (!stream || stream->isFakeStream() || streams_with_first_token.count(stream->streamId()) != 0) {
+                continue;
+            }
+            const auto time_info = stream->getTimeInfo();
+            if (time_info.first_token_rt_us <= 0) {
+                continue;
+            }
+            RTP_LLM_LOG_INFO(
+                "[PERF] first_token_stages: request_id=%ld, stream_id=%ld, first_token_latency_us=%ld, "
+                "wait_latency_us=%ld, pure_infer_us=%ld, gather_model_input_us=%ld, tp_sync_input_us=%ld, "
+                "kv_cache_update_us=%ld, model_forward_us=%ld, sampler_gather_input_us=%ld, "
+                "sampler_forward_us=%ld, dispatch_output_us=%ld, eplb_step_us=%ld, "
+                "ctx_batch=%zu, decode_batch=%zu, execute_tokens=%zu, max_seq_len=%zu",
+                stream->generateInput()->request_id,
+                stream->streamId(),
+                time_info.first_token_rt_us,
+                time_info.wait_time_us,
+                time_info.first_token_rt_us - time_info.wait_time_us,
+                executor_collector.gather_model_input_us,
+                executor_collector.tp_sync_input_us,
+                kv_cache_update_us,
+                executor_collector.model_forward_us,
+                sampler_gather_input_us,
+                sampler_forward_us,
+                executor_collector.dispatch_output_us,
+                executor_collector.eplb_step_latency_us,
+                stream_groups.totalContextBatchSize(),
+                stream_groups.totalDecodeBatchSize(),
+                stream_groups.modelExecuteTokenSize(),
+                stream_groups.maxSeqLen());
+        }
 
         model_->releaseBuffers();
 
