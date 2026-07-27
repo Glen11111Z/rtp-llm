@@ -109,8 +109,14 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
 
     int64_t forward_start_us     = autil::TimeUtility::currentTimeInMicroSeconds();
     int64_t preprocess_logits_us = 0;
-    int64_t prepare_output_us    = 0;
-    int64_t greedy_exec_us       = 0;
+    int64_t prepare_output_us      = 0;
+    int64_t alloc_success_us       = 0;
+    int64_t alloc_beam_indices_us  = 0;
+    int64_t token_ids_to_cuda_us   = 0;
+    int64_t alloc_token_ids_out_us = 0;
+    int64_t alloc_cum_log_probs_us = 0;
+    int64_t greedy_buffer_get_us   = 0;
+    int64_t greedy_exec_us         = 0;
     int64_t beam_exec_us         = 0;
     int64_t postprocess_us       = 0;
     size_t  greedy_group_count   = 0;
@@ -128,31 +134,47 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
 
-    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t prepare_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
 
     // allocate output tensors
     // Keep success on CUDA to avoid a blocking D2H copy: the GPU sampling kernel writes success
     // directly, and callers that need CPU access should call .cpu() explicitly.
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto all_success =
         torch::empty({(int64_t)inputs.batch_size}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
+    alloc_success_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto all_beam_indices =
         has_num_beams ? torch::empty({(int64_t)inputs.batch_size_out}, torch::kInt32) : torch::Tensor();
+    alloc_beam_indices_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
     // Move token_ids to CUDA once so sampleGreedy writes GPU→GPU (no blocking D2H sync).
     // Callers that need CPU access should call .cpu() explicitly.
     // Use blocking transfer: on ROCm, hipMemcpyAsync from pageable memory is truly async
     // and can cause memory access faults if a kernel reads the buffer before transfer completes.
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto inputs_token_ids_cuda = inputs.token_ids.to(torch::kCUDA);
-    auto all_token_ids_out     = variable_num_beams ?
+    token_ids_to_cuda_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    auto all_token_ids_out = variable_num_beams ?
                                      torch::empty({(int64_t)inputs.batch_size_out, (int64_t)max_seq_len},
                                               torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA)) :
                                      inputs_token_ids_cuda;
+    alloc_token_ids_out_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto all_cum_log_probs_out = variable_num_beams && inputs.cum_log_probs.defined() ?
                                      torch::empty({(int64_t)inputs.batch_size_out}, torch::kFloat32) :
                                      inputs.cum_log_probs;
+    alloc_cum_log_probs_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
     size_t from_batch_idx_in = 0, to_batch_idx_in = 0;
     size_t from_batch_idx_out      = 0;
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto&  greedy_sampling_buffers = nextGreedySamplingBuffers(inputs.batch_size);
+    greedy_buffer_get_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
     struct GreedySamplingBufferGuard {
         Sampler* sampler = nullptr;
         ~GreedySamplingBufferGuard() {
@@ -168,7 +190,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             }
         }
     } greedy_sampling_buffer_guard{this};
-    prepare_output_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+    prepare_output_us = autil::TimeUtility::currentTimeInMicroSeconds() - prepare_start_us;
 
     while (from_batch_idx_in < inputs.batch_size) {
         auto cur_num_beams_in  = num_beams_in[from_batch_idx_in];
@@ -328,6 +350,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     int64_t total_us = autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us;
     RTP_LLM_LOG_INFO(
         "[PERF] sampler_forward_detail: total_us=%ld, preprocess_logits_us=%ld, prepare_output_us=%ld, "
+        "alloc_success_us=%ld, alloc_beam_indices_us=%ld, token_ids_to_cuda_us=%ld, "
+        "alloc_token_ids_out_us=%ld, alloc_cum_log_probs_us=%ld, greedy_buffer_get_us=%ld, "
         "greedy_exec_us=%ld, beam_exec_us=%ld, postprocess_us=%ld, batch_size=%zu, batch_size_out=%zu, "
         "vocab_size=%zu, step=%zu, greedy_groups=%zu, beam_groups=%zu, has_logits_processor=%d, "
         "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
@@ -335,6 +359,12 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         total_us,
         preprocess_logits_us,
         prepare_output_us,
+        alloc_success_us,
+        alloc_beam_indices_us,
+        token_ids_to_cuda_us,
+        alloc_token_ids_out_us,
+        alloc_cum_log_probs_us,
+        greedy_buffer_get_us,
         greedy_exec_us,
         beam_exec_us,
         postprocess_us,
