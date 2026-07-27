@@ -121,13 +121,6 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         auto data = t.data_ptr<float>();
         return std::all_of(data, data + t.numel(), [expected](float value) { return value == expected; });
     };
-    auto tensorAllBoolEqual = [](const torch::Tensor& t, bool expected) -> bool {
-        if (!t.defined()) {
-            return true;
-        }
-        auto data = t.data_ptr<bool>();
-        return std::all_of(data, data + t.numel(), [expected](bool value) { return value == expected; });
-    };
 
     int64_t forward_start_us     = autil::TimeUtility::currentTimeInMicroSeconds();
     int64_t preprocess_logits_us = 0;
@@ -160,13 +153,10 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     bool simple_greedy_fast_path = !has_num_beams && !variable_num_beams && !has_logits_processor
                                    && !inputs.return_original_all_probs && !inputs.all_probs.defined()
                                    && !inputs.cum_log_probs.defined() && tensorAllInt32Equal(inputs.top_k, 1)
-                                   && tensorAllFloatEqual(inputs.top_p, 1.0f)
-                                   && tensorAllFloatEqual(inputs.temperature, 1.0f)
                                    && tensorAllFloatEqual(inputs.repetition_penalty, 1.0f)
                                    && tensorAllFloatEqual(inputs.presence_penalty, 0.0f)
                                    && tensorAllFloatEqual(inputs.frequency_penalty, 0.0f)
-                                   && tensorAllInt32Equal(inputs.no_repeat_ngram_size, 0)
-                                   && tensorAllBoolEqual(inputs.do_sample, false);
+                                   && tensorAllInt32Equal(inputs.no_repeat_ngram_size, 0);
 
     if (simple_greedy_fast_path) {
         int64_t prepare_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
