@@ -3,6 +3,7 @@
 #include "rtp_llm/cpp/utils/AssertUtils.h"
 #include "rtp_llm/cpp/utils/TensorDebugUtils.h"
 #include "rtp_llm/cpp/utils/ErrorCode.h"
+#include "autil/TimeUtility.h"
 #if USING_CUDA
 #include "rtp_llm/models_py/bindings/cuda/ops/StandaloneOps.h"
 #include "ATen/cuda/CUDAContext.h"
@@ -13,21 +14,30 @@ namespace rtp_llm {
 absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
                                               const MergedOutput& merge_outputs) const {
     RTP_LLM_LOG_DEBUG(__PRETTY_FUNCTION__);
+    int64_t dispatch_start_us  = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t token_ids_cpu_us   = 0;
+    int64_t success_cpu_us     = 0;
+    int64_t stream_dispatch_us = 0;
     const auto&  sampler_output       = merge_outputs.sampler_output;
     const size_t total_batch_size_out = stream_groups.totalSamplerBatchSizeOut();
     RTP_LLM_CHECK(total_batch_size_out == (size_t)sampler_output.token_ids.size(0));
     // token_ids and success may be CUDA tensors (Sampler keeps them on GPU to avoid D2H sync during sampling).
     // Move to CPU once here so dispatchSingleStream can use data_ptr safely.
+    int64_t stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     const torch::Tensor token_ids_cpu =
         sampler_output.token_ids.defined() ? sampler_output.token_ids.cpu() : torch::Tensor();
+    token_ids_cpu_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
     RTP_LLM_LOG_DEBUG("new_all_token_ids = [%s]", tensorDebugStringWithData<int32_t>(token_ids_cpu).c_str());
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     const torch::Tensor success_cpu = sampler_output.success.defined() ? sampler_output.success.cpu() : torch::Tensor();
+    success_cpu_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
     int                 batch_idx_in     = 0;
     int                 batch_idx_out    = 0;
     int                 token_offset     = 0;
     bool                return_all_probs = stream_groups.needReturnAllProbs() != ReturnAllProbsMode::NONE;
     auto                new_tokens_all   = torch::empty({(int64_t)total_batch_size_out, 1}, torch::kInt32);
 
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     for (auto& stream : stream_groups.allStreams()) {
         auto cur_batch_size  = stream->currentBatchSize();
         auto next_batch_size = stream->nextBatchSize();
@@ -48,6 +58,24 @@ absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
         token_offset += token_size;
     }
 
+    stream_dispatch_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    int64_t total_us = autil::TimeUtility::currentTimeInMicroSeconds() - dispatch_start_us;
+    RTP_LLM_LOG_INFO(
+        "[PERF] dispatch_output_detail: total_us=%ld, token_ids_cpu_us=%ld, success_cpu_us=%ld, "
+        "stream_dispatch_us=%ld, batch_size_out=%zu, stream_count=%zu, token_ids_is_new_tokens=%d, "
+        "token_ids_numel=%ld, success_numel=%ld, return_all_probs=%d",
+        total_us,
+        token_ids_cpu_us,
+        success_cpu_us,
+        stream_dispatch_us,
+        total_batch_size_out,
+        stream_groups.size(),
+        sampler_output.token_ids_is_new_tokens,
+        sampler_output.token_ids.defined() ? sampler_output.token_ids.numel() : 0,
+        sampler_output.success.defined() ? sampler_output.success.numel() : 0,
+        return_all_probs);
+
     RTP_LLM_LOG_DEBUG("dispatch done");
     return absl::OkStatus();
 }
@@ -66,6 +94,13 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
     const auto&  sampler_output    = merge_outputs.sampler_output;
     const auto&  new_all_token_ids = token_ids_cpu;
     const size_t token_stride      = new_all_token_ids.size(1);
+    int64_t      stream_start_us   = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t      stage_start_us    = 0;
+    int64_t      prepare_update_us = 0;
+    int64_t      new_tokens_us     = 0;
+    int64_t      softmax_us        = 0;
+    int64_t      success_check_us  = 0;
+    int64_t      stream_update_us  = 0;
 
     auto cur_batch_size  = stream->currentBatchSize();
     auto next_batch_size = stream->nextBatchSize();
@@ -180,6 +215,9 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
         all_hidden_states = model_output.all_hidden_states.narrow(0, token_offset, token_size);
     }
 
+    prepare_update_us = autil::TimeUtility::currentTimeInMicroSeconds() - stream_start_us;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     auto new_tokens = new_tokens_all.narrow(0, batch_idx_out, next_batch_size);
     if (sampler_output.token_ids_is_new_tokens) {
         RTP_LLM_CHECK_WITH_INFO(!has_beam_search, "new-token sampler output is not supported for beam search");
@@ -191,7 +229,9 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
                 new_all_token_ids.data_ptr<int32_t>()[(batch_idx_out + i) * token_stride + token_stride - 1];
         }
     }
+    new_tokens_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     torch::Tensor current_softmax_result;
     if (stream->calculateSoftmaxProbs()) {
         auto batch_softmax_input = batch_logits.to(torch::kFloat32).contiguous();
@@ -206,15 +246,19 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
             current_softmax_result[i][0] = batch_softmax_tensor[get_src_idx(i)][new_tokens.data_ptr<int32_t>()[i]];
         }
     }
+    softmax_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     for (int i = 0; i < cur_batch_size; ++i) {
         if (success_cpu.defined() && !(success_cpu.data_ptr<bool>()[batch_idx_in + i])) {
             stream->reportError(ErrorCode::UNKNOWN_ERROR, "sampler generate token id failed");
         }
     }
+    success_check_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
     RTP_LLM_LOG_DEBUG("stream [%ld], new_tokens size = [%ld]", stream->streamId(), new_tokens.numel());
 
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     stream->update({has_beam_search ? batch_new_all_token_ids : new_tokens,
                     1,
                     batch_hidden_states,
@@ -228,6 +272,28 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
                     true,
                     false,
                     prompt_logits_output});
+    stream_update_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    RTP_LLM_LOG_INFO(
+        "[PERF] dispatch_single_stream_detail: request_id=%ld, stream_id=%ld, total_us=%ld, "
+        "prepare_update_us=%ld, new_tokens_us=%ld, softmax_us=%ld, success_check_us=%ld, "
+        "stream_update_us=%ld, cur_batch_size=%d, next_batch_size=%d, token_size=%d, "
+        "has_beam_search=%d, has_var_batch=%d, return_all_probs=%d, token_ids_is_new_tokens=%d",
+        stream->generateInput()->request_id,
+        stream->streamId(),
+        autil::TimeUtility::currentTimeInMicroSeconds() - stream_start_us,
+        prepare_update_us,
+        new_tokens_us,
+        softmax_us,
+        success_check_us,
+        stream_update_us,
+        cur_batch_size,
+        next_batch_size,
+        token_size,
+        has_beam_search,
+        has_var_batch,
+        return_all_probs,
+        sampler_output.token_ids_is_new_tokens);
 }
 
 }  // namespace rtp_llm
