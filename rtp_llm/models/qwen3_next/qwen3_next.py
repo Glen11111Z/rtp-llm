@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from typing import Any, Dict, List
 
@@ -37,6 +38,18 @@ class Qwen3NextBase(BaseModel):
             fmha_config=fmha_config,
             py_hw_kernel_config=py_hw_kernel_config,
             device_resource_config=self.device_resource_config,
+        )
+        ffn_disaggregate_config = getattr(
+            parallelism_config, "ffn_disaggregate_config", None
+        )
+        logging.info(
+            "[PERF] python_model_create_detail: model_type=%s, base_model_class=%s, "
+            "py_model_class=%s, py_model_module=%s, enable_ffn_disaggregate=%s",
+            getattr(model_config, "model_type", ""),
+            type(self).__name__,
+            type(self.py_model).__name__,
+            type(self.py_model).__module__,
+            getattr(ffn_disaggregate_config, "enable_ffn_disaggregate", False),
         )
         return self.py_model
 
@@ -248,6 +261,18 @@ class Qwen35Moe(Qwen3NextBase):
             fmha_config=fmha_config,
             py_hw_kernel_config=py_hw_kernel_config,
             device_resource_config=self.device_resource_config,
+        )
+        ffn_disaggregate_config = getattr(
+            parallelism_config, "ffn_disaggregate_config", None
+        )
+        logging.info(
+            "[PERF] python_model_create_detail: model_type=%s, base_model_class=%s, "
+            "py_model_class=%s, py_model_module=%s, enable_ffn_disaggregate=%s",
+            getattr(model_config, "model_type", ""),
+            type(self).__name__,
+            type(self.py_model).__name__,
+            type(self.py_model).__module__,
+            getattr(ffn_disaggregate_config, "enable_ffn_disaggregate", False),
         )
         return self.py_model
 
