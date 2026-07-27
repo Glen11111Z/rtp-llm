@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <numeric>
+#include "autil/TimeUtility.h"
 #include "rtp_llm/cpp/utils/DevicePerfWrapper.h"
 #include "rtp_llm/cpp/utils/ProfilingScope.h"
 #if USING_CUDA
@@ -456,6 +457,22 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
     RTP_LLM_PROFILE_SCOPE("py_model.forward");
     d2d_copies_.clear();
     DevicePerfWrapper wrapper(enable_device_perf_, "py model forward");
+    int64_t forward_start_us        = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t input_prepare_us        = 0;
+    int64_t context_parallel_in_us  = 0;
+    int64_t fused_copy_us           = 0;
+    int64_t prepare_fmha_us         = 0;
+    int64_t py_forward_us           = 0;
+    int64_t hidden_clone_us         = 0;
+    int64_t cache_store_wait_us     = 0;
+    int64_t context_parallel_out_us = 0;
+    int64_t post_layers_us          = 0;
+    bool    used_cuda_graph         = false;
+    bool    used_micro_batch        = false;
+    auto    context_batch_size      = inputs.input_lengths.size(0) - inputs.sequence_lengths.size(0);
+    auto    decode_batch_size       = inputs.sequence_lengths.size(0);
+    auto    execute_tokens          = inputs.combo_tokens.size(0);
+    int64_t stage_start_us          = autil::TimeUtility::currentTimeInMicroSeconds();
     holdInputsHostBuffers(inputs);
     if (pinned_check_remaining_ > 0) {
         --pinned_check_remaining_;
@@ -464,11 +481,36 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
         RTP_LLM_LOG_DEBUG("Calling forward method on Python object instance.");
 
         if (int(device_props_.enable_layer_micro_batch)) {
-            return forwardMicroBatched(inputs);
+            used_micro_batch = true;
+            int64_t micro_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+            auto    outputs        = forwardMicroBatched(inputs);
+            RTP_LLM_LOG_INFO(
+                "[PERF] model_forward_detail: total_us=%ld, input_prepare_us=%ld, context_parallel_in_us=%ld, "
+                "fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, hidden_clone_us=%ld, "
+                "cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, ctx_batch=%ld, "
+                "decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d",
+                autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us,
+                autil::TimeUtility::currentTimeInMicroSeconds() - micro_start_us,
+                context_parallel_in_us,
+                fused_copy_us,
+                prepare_fmha_us,
+                py_forward_us,
+                hidden_clone_us,
+                cache_store_wait_us,
+                context_parallel_out_us,
+                post_layers_us,
+                context_batch_size,
+                decode_batch_size,
+                execute_tokens,
+                used_cuda_graph,
+                used_micro_batch);
+            return outputs;
         }
         PyContextParallelParams cp_params;
         if (device_props_.enable_prefill_cp) {
+            int64_t cp_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             context_parallel_processor_->handleInputs(const_cast<GptModelInputs&>(inputs), cp_params);
+            context_parallel_in_us = autil::TimeUtility::currentTimeInMicroSeconds() - cp_start_us;
         }
 
         torch::Tensor token_ids;
@@ -497,9 +539,12 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
 
         calculatePaddingOffset(attention_inputs);
         attention_inputs.padding_offset = tensorHoldHostAndToCuda(attention_inputs.padding_offset);
+        input_prepare_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
         // launch fused copy
+        stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
         fusedCopy(d2d_copies_);
+        fused_copy_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
         auto           py_model_inputs = PyModelInputs({token_ids,
                                                         input_hiddens,
@@ -522,10 +567,15 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
                 py_model_inputs.attention_inputs.is_target_verify,
                 py_model_inputs.attention_inputs.is_prefill,
                 graph_state.current_real_graph_bs);
+            used_cuda_graph = true;
             py_model_inputs.attention_inputs.is_s_padded = true;
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             py_model_outputs                             = graph_runner_->forward(py_model_inputs, graph_state);
+            py_forward_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
             RTP_LLM_LOG_DEBUG("[PyWrappedModel] CUDA graph forward completed");
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             hidden_states = py_model_outputs.hidden_states.clone();
+            hidden_clone_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
         } else {
             py::gil_scoped_acquire gil;
             RTP_LLM_PROFILE_SCOPE("py_model.forward(normal)");
@@ -533,23 +583,60 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
             RTP_LLM_LOG_DEBUG("[PyWrappedModel] using normal forward, is_target_verify=%d, is_prefill=%d",
                               py_model_inputs.attention_inputs.is_target_verify,
                               py_model_inputs.attention_inputs.is_prefill);
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             held_attn_pyobj_      = py_model_.attr("prepare_fmha_impl")(py_model_inputs, false);
+            prepare_fmha_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
             auto py_model_forward = py_model_.attr("forward");
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             auto outputs          = py_model_forward(py_model_inputs, held_attn_pyobj_);
+            py_forward_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
             py_model_outputs      = outputs.cast<PyModelOutputs>();
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             hidden_states         = py_model_outputs.hidden_states.clone();
+            hidden_clone_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
         }
 
         if (!inputs.warmup && inputs.pd_separation) {
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             cache_store_async_writer_->waitAllDone();
+            cache_store_wait_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
         }
 
         RTP_LLM_LOG_DEBUG("Python object instance forward method called successfully.");
+        GptModelOutputs outputs;
         if (device_props_.enable_prefill_cp) {
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             size_t num_valid_tokens = context_parallel_processor_->handleOutputs(hidden_states, inputs, cp_params);
-            return callForwardPostLayers(hidden_states, inputs, true, num_valid_tokens);
+            context_parallel_out_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+            outputs = callForwardPostLayers(hidden_states, inputs, true, num_valid_tokens);
+            post_layers_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+        } else {
+            stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+            outputs = callForwardPostLayers(hidden_states, inputs, true);
+            post_layers_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
         }
-        return callForwardPostLayers(hidden_states, inputs, true);
+        RTP_LLM_LOG_INFO(
+            "[PERF] model_forward_detail: total_us=%ld, input_prepare_us=%ld, context_parallel_in_us=%ld, "
+            "fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, hidden_clone_us=%ld, "
+            "cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, ctx_batch=%ld, "
+            "decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d",
+            autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us,
+            input_prepare_us,
+            context_parallel_in_us,
+            fused_copy_us,
+            prepare_fmha_us,
+            py_forward_us,
+            hidden_clone_us,
+            cache_store_wait_us,
+            context_parallel_out_us,
+            post_layers_us,
+            context_batch_size,
+            decode_batch_size,
+            execute_tokens,
+            used_cuda_graph,
+            used_micro_batch);
+        return outputs;
 
     } catch (const py::error_already_set& e) {
         RTP_LLM_LOG_ERROR("Python error during forward call on Python instance: %s", e.what());

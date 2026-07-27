@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <exception>
 #include <unordered_set>
+#include "autil/TimeUtility.h"
 #include "rtp_llm/cpp/utils/ProfilingScope.h"
 
 using namespace std;
@@ -106,7 +107,18 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         return t.defined() ? std::optional<torch::Tensor>(t.narrow(0, offset, size)) : std::nullopt;
     };
 
+    int64_t forward_start_us     = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t preprocess_logits_us = 0;
+    int64_t prepare_output_us    = 0;
+    int64_t greedy_exec_us       = 0;
+    int64_t beam_exec_us         = 0;
+    int64_t postprocess_us       = 0;
+    size_t  greedy_group_count   = 0;
+    size_t  beam_group_count     = 0;
+
+    int64_t stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     preprocessLogits(inputs);
+    preprocess_logits_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
     uint64_t max_seq_len   = inputs.token_ids.size(1);
     auto     num_beams_in  = inputs.num_beams_in.data_ptr<int64_t>();
@@ -115,6 +127,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     bool has_num_beams = std::any_of(num_beams_in, num_beams_in + inputs.batch_size, [](auto n) { return n > 1; })
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
 
     // allocate output tensors
     // Keep success on CUDA to avoid a blocking D2H copy: the GPU sampling kernel writes success
@@ -154,6 +168,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             }
         }
     } greedy_sampling_buffer_guard{this};
+    prepare_output_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
     while (from_batch_idx_in < inputs.batch_size) {
         auto cur_num_beams_in  = num_beams_in[from_batch_idx_in];
@@ -214,6 +229,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             GreedySamplingBuffers* greedy_sampling_buffer_ptr = &greedy_sampling_buffer_slice;
 
             RTP_LLM_PROFILE_SCOPE("sampler.forward.execSampleGreedy");
+            int64_t sample_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             auto greedy_output = execSampleGreedy(
                 {logits,
                  input_lengths,
@@ -234,6 +250,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                  do_sample,
                  generator,
                  greedy_sampling_buffer_ptr});
+            greedy_exec_us += autil::TimeUtility::currentTimeInMicroSeconds() - sample_start_us;
+            ++greedy_group_count;
             if (greedy_output.success.defined()) {
                 success.copy_(greedy_output.success);
                 // TODO(zhangjianning.zjn): would be better to eliminate the copy
@@ -274,12 +292,15 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             auto sequence_lengths_t = sequence_lengths_reshaped.to(torch::kCUDA);
             auto cum_log_probs_in_t = cum_log_probs_in_reshaped.to(torch::kCUDA);
 
+            int64_t sample_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             auto output = execSampleBeamSearch({logits_t,
                                                 token_ids_in_t,
                                                 input_lengths_t,
                                                 sequence_lengths_t,
                                                 cum_log_probs_in_t,
                                                 (size_t)cur_num_beams_out});
+            beam_exec_us += autil::TimeUtility::currentTimeInMicroSeconds() - sample_start_us;
+            ++beam_group_count;
 
             auto token_ids_out_reshaped =
                 token_ids_out.reshape({(int64_t)beam_batch_size, (int64_t)cur_num_beams_out, (int64_t)max_seq_len_val});
@@ -297,10 +318,41 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             success.fill_(true);
         }
 
+        int64_t post_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
         // prepare for next sampling
         from_batch_idx_in  = to_batch_idx_in;
         from_batch_idx_out = to_batch_idx_out;
+        postprocess_us += autil::TimeUtility::currentTimeInMicroSeconds() - post_start_us;
     }
+
+    int64_t total_us = autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us;
+    RTP_LLM_LOG_INFO(
+        "[PERF] sampler_forward_detail: total_us=%ld, preprocess_logits_us=%ld, prepare_output_us=%ld, "
+        "greedy_exec_us=%ld, beam_exec_us=%ld, postprocess_us=%ld, batch_size=%zu, batch_size_out=%zu, "
+        "vocab_size=%zu, step=%zu, greedy_groups=%zu, beam_groups=%zu, has_logits_processor=%d, "
+        "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
+        "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d",
+        total_us,
+        preprocess_logits_us,
+        prepare_output_us,
+        greedy_exec_us,
+        beam_exec_us,
+        postprocess_us,
+        inputs.batch_size,
+        inputs.batch_size_out,
+        inputs.vocab_size,
+        inputs.step,
+        greedy_group_count,
+        beam_group_count,
+        inputs.logits_processor_states_ptr != nullptr,
+        has_num_beams,
+        variable_num_beams,
+        inputs.return_original_all_probs,
+        inputs.all_probs.defined(),
+        inputs.do_sample.defined(),
+        inputs.top_k.defined(),
+        inputs.top_p.defined(),
+        inputs.temperature.defined());
 
     return SamplerOutput({std::move(all_token_ids_out),
                           std::move(all_cum_log_probs_out),
