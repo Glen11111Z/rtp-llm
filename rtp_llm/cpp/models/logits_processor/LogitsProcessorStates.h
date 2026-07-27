@@ -14,6 +14,7 @@ public:
 public:
     void batchProcess(const SamplerInputs& inputs);
     void insert(const BaseLogitsProcessorPtr& ptr, size_t start, size_t finish);
+    bool empty() const;
 
 private:
     std::vector<BaseLogitsProcessorPtr>    logits_processors_;

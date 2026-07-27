@@ -107,6 +107,28 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         return t.defined() ? std::optional<torch::Tensor>(t.narrow(0, offset, size)) : std::nullopt;
     };
 
+    auto tensorAllInt32Equal = [](const torch::Tensor& t, int32_t expected) -> bool {
+        if (!t.defined()) {
+            return true;
+        }
+        auto data = t.data_ptr<int32_t>();
+        return std::all_of(data, data + t.numel(), [expected](int32_t value) { return value == expected; });
+    };
+    auto tensorAllFloatEqual = [](const torch::Tensor& t, float expected) -> bool {
+        if (!t.defined()) {
+            return true;
+        }
+        auto data = t.data_ptr<float>();
+        return std::all_of(data, data + t.numel(), [expected](float value) { return value == expected; });
+    };
+    auto tensorAllBoolEqual = [](const torch::Tensor& t, bool expected) -> bool {
+        if (!t.defined()) {
+            return true;
+        }
+        auto data = t.data_ptr<bool>();
+        return std::all_of(data, data + t.numel(), [expected](bool value) { return value == expected; });
+    };
+
     int64_t forward_start_us     = autil::TimeUtility::currentTimeInMicroSeconds();
     int64_t preprocess_logits_us = 0;
     int64_t prepare_output_us      = 0;
@@ -133,6 +155,80 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     bool has_num_beams = std::any_of(num_beams_in, num_beams_in + inputs.batch_size, [](auto n) { return n > 1; })
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
+    bool has_logits_processor = inputs.logits_processor_states_ptr != nullptr
+                                && !inputs.logits_processor_states_ptr->empty();
+    bool simple_greedy_fast_path = !has_num_beams && !variable_num_beams && !has_logits_processor
+                                   && !inputs.return_original_all_probs && !inputs.all_probs.defined()
+                                   && !inputs.cum_log_probs.defined() && tensorAllInt32Equal(inputs.top_k, 1)
+                                   && tensorAllFloatEqual(inputs.top_p, 1.0f)
+                                   && tensorAllFloatEqual(inputs.temperature, 1.0f)
+                                   && tensorAllFloatEqual(inputs.repetition_penalty, 1.0f)
+                                   && tensorAllFloatEqual(inputs.presence_penalty, 0.0f)
+                                   && tensorAllFloatEqual(inputs.frequency_penalty, 0.0f)
+                                   && tensorAllInt32Equal(inputs.no_repeat_ngram_size, 0)
+                                   && tensorAllBoolEqual(inputs.do_sample, false);
+
+    if (simple_greedy_fast_path) {
+        int64_t prepare_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        stage_start_us           = autil::TimeUtility::currentTimeInMicroSeconds();
+        auto all_success = torch::empty({(int64_t)inputs.batch_size},
+                                        torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
+        all_success.fill_(true);
+        alloc_success_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+        prepare_output_us = autil::TimeUtility::currentTimeInMicroSeconds() - prepare_start_us;
+
+        stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        auto new_token_ids =
+            torch::argmax(inputs.logits, -1).to(torch::kInt32).reshape({(int64_t)inputs.batch_size, 1});
+        greedy_exec_us     = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+        greedy_group_count = 1;
+
+        int64_t total_us = autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us;
+        RTP_LLM_LOG_INFO(
+            "[PERF] sampler_forward_detail: total_us=%ld, preprocess_logits_us=%ld, prepare_output_us=%ld, "
+            "alloc_success_us=%ld, alloc_beam_indices_us=%ld, token_ids_to_cuda_us=%ld, "
+            "alloc_token_ids_out_us=%ld, alloc_cum_log_probs_us=%ld, greedy_buffer_get_us=%ld, "
+            "greedy_exec_us=%ld, beam_exec_us=%ld, postprocess_us=%ld, batch_size=%zu, batch_size_out=%zu, "
+            "vocab_size=%zu, step=%zu, greedy_groups=%zu, beam_groups=%zu, has_logits_processor=%d, "
+            "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
+            "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d, "
+            "simple_greedy_fast_path=%d",
+            total_us,
+            preprocess_logits_us,
+            prepare_output_us,
+            alloc_success_us,
+            alloc_beam_indices_us,
+            token_ids_to_cuda_us,
+            alloc_token_ids_out_us,
+            alloc_cum_log_probs_us,
+            greedy_buffer_get_us,
+            greedy_exec_us,
+            beam_exec_us,
+            postprocess_us,
+            inputs.batch_size,
+            inputs.batch_size_out,
+            inputs.vocab_size,
+            inputs.step,
+            greedy_group_count,
+            beam_group_count,
+            has_logits_processor,
+            has_num_beams,
+            variable_num_beams,
+            inputs.return_original_all_probs,
+            inputs.all_probs.defined(),
+            inputs.do_sample.defined(),
+            inputs.top_k.defined(),
+            inputs.top_p.defined(),
+            inputs.temperature.defined(),
+            simple_greedy_fast_path);
+
+        return SamplerOutput({std::move(new_token_ids),
+                              torch::Tensor(),
+                              torch::Tensor(),
+                              torch::Tensor(),
+                              std::move(all_success),
+                              true});
+    }
 
     int64_t prepare_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
 
@@ -355,7 +451,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         "greedy_exec_us=%ld, beam_exec_us=%ld, postprocess_us=%ld, batch_size=%zu, batch_size_out=%zu, "
         "vocab_size=%zu, step=%zu, greedy_groups=%zu, beam_groups=%zu, has_logits_processor=%d, "
         "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
-        "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d",
+        "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d, "
+        "simple_greedy_fast_path=%d",
         total_us,
         preprocess_logits_us,
         prepare_output_us,
@@ -374,7 +471,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         inputs.step,
         greedy_group_count,
         beam_group_count,
-        inputs.logits_processor_states_ptr != nullptr,
+        has_logits_processor,
         has_num_beams,
         variable_num_beams,
         inputs.return_original_all_probs,
@@ -382,17 +479,19 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         inputs.do_sample.defined(),
         inputs.top_k.defined(),
         inputs.top_p.defined(),
-        inputs.temperature.defined());
+        inputs.temperature.defined(),
+        simple_greedy_fast_path);
 
     return SamplerOutput({std::move(all_token_ids_out),
                           std::move(all_cum_log_probs_out),
                           std::move(inputs.all_probs),
                           std::move(all_beam_indices),
-                          std::move(all_success)});
+                          std::move(all_success),
+                          false});
 }
 
 void Sampler::preprocessLogits(const SamplerInputs& inputs) {
-    if (inputs.logits_processor_states_ptr != nullptr) {
+    if (inputs.logits_processor_states_ptr != nullptr && !inputs.logits_processor_states_ptr->empty()) {
         inputs.logits_processor_states_ptr->batchProcess(inputs);
     }
 }

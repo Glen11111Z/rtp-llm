@@ -12,6 +12,10 @@ void LogitsProcessorStates::batchProcess(const SamplerInputs& inputs) {
     }
 }
 
+bool LogitsProcessorStates::empty() const {
+    return logits_processors_.empty();
+}
+
 void LogitsProcessorStates::insert(const BaseLogitsProcessorPtr& ptr, size_t start, size_t finish) {
     logits_processors_.push_back(ptr);
     intervals_.push_back(std::make_pair(start, finish));
