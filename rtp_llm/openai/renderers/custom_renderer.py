@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
@@ -458,12 +459,14 @@ class CustomChatRenderer:
 
         # 处理非流式请求的合并逻辑
         if not generate_config.is_streaming:
-            output_generator = await self._merge_non_streaming_outputs(output_generator)
+            output_generator = await self._merge_non_streaming_outputs(
+                output_generator, request_id
+            )
 
         if generate_config.return_prompt_logits:
             last_response = None
             async for response in self.render_response_stream(
-                output_generator, request, generate_config
+                output_generator, request, generate_config, request_id
             ):
                 if last_response is not None:
                     yield last_response
@@ -474,7 +477,7 @@ class CustomChatRenderer:
                 yield last_response
         else:
             async for response in self.render_response_stream(
-                output_generator, request, generate_config
+                output_generator, request, generate_config, request_id
             ):
                 yield response
 
@@ -500,7 +503,9 @@ class CustomChatRenderer:
         return replay(), prompt_logits_data
 
     async def _merge_non_streaming_outputs(
-        self, output_generator: AsyncGenerator[GenerateOutputs, None]
+        self,
+        output_generator: AsyncGenerator[GenerateOutputs, None],
+        request_id: Optional[int] = None,
     ) -> AsyncGenerator[GenerateOutputs, None]:
         """
         合并非流式请求的多个输出为单个输出
@@ -515,6 +520,10 @@ class CustomChatRenderer:
         collected_outputs = []
         async for output in output_generator:
             collected_outputs.append(output)
+            # 非流式提前退出：所有 beam 均已 finished，无需等待 gRPC stream 自然关闭。
+            # C++ 侧 meta_->dequeue() 等清理工作约需 10ms，Python 侧可以提前 break 不受影响。
+            if output.generate_outputs and all(o.finished for o in output.generate_outputs):
+                break
 
         # 合并输出
         merged_output = self._merge_generate_outputs(collected_outputs)
@@ -1020,6 +1029,7 @@ class CustomChatRenderer:
         output_generator: AsyncGenerator[GenerateOutputs, None],
         request: ChatCompletionRequest,
         generate_config: GenerateConfig,
+        request_id: Optional[int] = None,
     ) -> AsyncGenerator[StreamResponseObject, None]:
         stop_word_slice_list = get_stop_word_slices(generate_config.stop_words_str)
         nums_output = request.n if request.n is not None else 1
@@ -1044,9 +1054,13 @@ class CustomChatRenderer:
             )
             for _ in range(nums_output)
         ]
+        first_response = None
         async for outputs in output_generator:
             if index == 0:
-                yield await self._generate_first(nums_output)
+                first_response = await self._generate_first(nums_output)
+                if generate_config.is_streaming:
+                    yield first_response   # 流式立即返回 role chunk
+                # 非流式：first_response 暂不 yield，等内容 chunk 准备好后合并
             index += 1
             if len(outputs.generate_outputs) != nums_output:
                 raise Exception(
@@ -1067,17 +1081,32 @@ class CustomChatRenderer:
                         output, generate_config
                     )
                 delta_list.append(delta)
-            yield await self._generate_stream_response(delta_list, think_status_list)
+            stream_response = await self._generate_stream_response(delta_list, think_status_list)
+            if index == 1:
+                if not generate_config.is_streaming and first_response is not None:
+                    # 非流式：将 role 写入 content chunk，一次 yield 完成 ①+②
+                    for i, choice in enumerate(stream_response.choices):
+                        if i < len(first_response.choices):
+                            choice.delta.role = first_response.choices[i].delta.role
+            yield stream_response
             if self._check_all_finished(status_list):
                 break
         if index != 0:
-            yield await self._flush_buffer(
+            flush_response = await self._flush_buffer(
                 status_list,
                 generate_config.stop_words_str,
                 generate_config.is_streaming,
                 think_status_list,
             )
-            yield await self._generate_final(status_list, request, think_status_list)
+            final_response = await self._generate_final(status_list, request, think_status_list)
+            if generate_config.is_streaming:
+                yield flush_response   # 流式：单独返回 trailing text chunk ④
+                yield final_response   # 流式：单独返回 finish_reason+usage chunk ⑤
+            else:
+                # 非流式：将 flush 的尾部文字写入 final chunk，一次 yield 完成 ④+⑤
+                for fl_choice, fn_choice in zip(flush_response.choices, final_response.choices):
+                    fn_choice.delta.content = fl_choice.delta.content
+                yield final_response
 
     def _create_empty_delta_sync(self, input_len: int, output_len: int, reuse_len: int):
         return OutputDelta(

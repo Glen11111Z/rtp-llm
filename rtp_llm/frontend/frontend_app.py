@@ -123,6 +123,15 @@ class FrontendApp(object):
         self.frontend_server.start()
         app = self.create_app()
 
+        # Try to use uvloop for better asyncio scheduling performance.
+        # uvloop is a fast, drop-in replacement for the built-in asyncio event loop.
+        try:
+            import uvloop
+            uvloop.install()  # Sets uvloop as the global event loop policy
+            logging.info("uvloop installed: using uvloop event loop for improved asyncio performance")
+        except ImportError:
+            logging.info("uvloop not available, using default asyncio event loop")
+
         loop = "auto"
         if threading.current_thread() != threading.main_thread():
             # NOTE: asyncio

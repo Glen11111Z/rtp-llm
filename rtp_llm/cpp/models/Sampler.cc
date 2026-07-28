@@ -106,6 +106,21 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         return t.defined() ? std::optional<torch::Tensor>(t.narrow(0, offset, size)) : std::nullopt;
     };
 
+    auto tensorAllInt32Equal = [](const torch::Tensor& t, int32_t expected) -> bool {
+        if (!t.defined()) {
+            return true;
+        }
+        auto data = t.data_ptr<int32_t>();
+        return std::all_of(data, data + t.numel(), [expected](int32_t value) { return value == expected; });
+    };
+    auto tensorAllFloatEqual = [](const torch::Tensor& t, float expected) -> bool {
+        if (!t.defined()) {
+            return true;
+        }
+        auto data = t.data_ptr<float>();
+        return std::all_of(data, data + t.numel(), [expected](float value) { return value == expected; });
+    };
+
     preprocessLogits(inputs);
 
     uint64_t max_seq_len   = inputs.token_ids.size(1);
@@ -115,6 +130,31 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     bool has_num_beams = std::any_of(num_beams_in, num_beams_in + inputs.batch_size, [](auto n) { return n > 1; })
                          || std::any_of(num_beams_out, num_beams_out + inputs.batch_size, [](auto n) { return n > 1; });
     bool variable_num_beams = inputs.batch_size != inputs.batch_size_out;
+    bool has_logits_processor = inputs.logits_processor_states_ptr != nullptr
+                                && !inputs.logits_processor_states_ptr->empty();
+    bool simple_greedy_fast_path = !has_num_beams && !variable_num_beams && !has_logits_processor
+                                   && !inputs.return_original_all_probs && !inputs.all_probs.defined()
+                                   && !inputs.cum_log_probs.defined() && tensorAllInt32Equal(inputs.top_k, 1)
+                                   && tensorAllFloatEqual(inputs.repetition_penalty, 1.0f)
+                                   && tensorAllFloatEqual(inputs.presence_penalty, 0.0f)
+                                   && tensorAllFloatEqual(inputs.frequency_penalty, 0.0f)
+                                   && tensorAllInt32Equal(inputs.no_repeat_ngram_size, 0);
+
+    if (simple_greedy_fast_path) {
+        auto all_success = torch::empty({(int64_t)inputs.batch_size},
+                                        torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
+        all_success.fill_(true);
+
+        auto new_token_ids =
+            torch::argmax(inputs.logits, -1).to(torch::kInt32).reshape({(int64_t)inputs.batch_size, 1});
+
+        return SamplerOutput({std::move(new_token_ids),
+                              torch::Tensor(),
+                              torch::Tensor(),
+                              torch::Tensor(),
+                              std::move(all_success),
+                              true});
+    }
 
     // allocate output tensors
     // Keep success on CUDA to avoid a blocking D2H copy: the GPU sampling kernel writes success
@@ -123,12 +163,13 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         torch::empty({(int64_t)inputs.batch_size}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
     auto all_beam_indices =
         has_num_beams ? torch::empty({(int64_t)inputs.batch_size_out}, torch::kInt32) : torch::Tensor();
+
     // Move token_ids to CUDA once so sampleGreedy writes GPU→GPU (no blocking D2H sync).
     // Callers that need CPU access should call .cpu() explicitly.
     // Use blocking transfer: on ROCm, hipMemcpyAsync from pageable memory is truly async
     // and can cause memory access faults if a kernel reads the buffer before transfer completes.
     auto inputs_token_ids_cuda = inputs.token_ids.to(torch::kCUDA);
-    auto all_token_ids_out     = variable_num_beams ?
+    auto all_token_ids_out = variable_num_beams ?
                                      torch::empty({(int64_t)inputs.batch_size_out, (int64_t)max_seq_len},
                                               torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA)) :
                                      inputs_token_ids_cuda;
@@ -306,11 +347,12 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
                           std::move(all_cum_log_probs_out),
                           std::move(inputs.all_probs),
                           std::move(all_beam_indices),
-                          std::move(all_success)});
+                          std::move(all_success),
+                          false});
 }
 
 void Sampler::preprocessLogits(const SamplerInputs& inputs) {
-    if (inputs.logits_processor_states_ptr != nullptr) {
+    if (inputs.logits_processor_states_ptr != nullptr && !inputs.logits_processor_states_ptr->empty()) {
         inputs.logits_processor_states_ptr->batchProcess(inputs);
     }
 }

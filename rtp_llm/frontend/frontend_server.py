@@ -443,8 +443,9 @@ class FrontendServer(object):
                 iter_count += 1
                 yield response
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
+            total_rt = current_time_ms() - start_time
             kmonitor.report(
-                GaugeMetrics.LANTENCY_METRIC, current_time_ms() - start_time
+                GaugeMetrics.LANTENCY_METRIC, total_rt
             )
             kmonitor.report(
                 AccMetrics.SUCCESS_QPS_METRIC,

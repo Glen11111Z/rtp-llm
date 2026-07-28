@@ -72,6 +72,7 @@ public:
     torch::Tensor all_probs;
     torch::Tensor beam_index;
     torch::Tensor success;
+    bool          token_ids_is_new_tokens = false;
 };
 
 struct MergedOutput {

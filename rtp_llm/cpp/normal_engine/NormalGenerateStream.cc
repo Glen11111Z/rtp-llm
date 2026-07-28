@@ -6,13 +6,20 @@ ErrorResult<GenerateOutputs> NormalGenerateStream::nextOutput() {
     // TODO(xinfei.sxf) 某些case下会出现1s的等待
     while ((!hasError()) && getStatus() != StreamState::FINISHED && generate_outputs_queue_.isEmpty()) {
         checkTimeout();
+        // finished_ 在 enqueueGenerateOutput() 之前由 updateOutput() 设置为 true。
+        // 若此时队列已空且所有子任务完成，不会再有新输出入队，直接退出避免等 1s timeout。
+        if (finished_) {
+            break;
+        }
         generate_outputs_queue_.waitNotEmpty();
     }
     if (hasError()) {
         return statusInfo();
     }
     if (generate_outputs_queue_.isEmpty()) {
-        if (isFinished()) {
+        // isFinished() 依赖 moveToNext() 更新主状态机，finished_ 则在 updateOutput() 中更早设置。
+        // 两者任一为真且队列为空，均表示不会再有输出，应返回 FINISHED。
+        if (isFinished() || finished_) {
             return ErrorInfo(ErrorCode::FINISHED, "finished");
         } else {
             return ErrorInfo(ErrorCode::OUTPUT_QUEUE_IS_EMPTY, "output queue is empty");

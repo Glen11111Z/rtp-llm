@@ -251,8 +251,9 @@ class Pipeline(object):
                 generate_config.sp_advice_prompt
             )
 
+        pre_pipeline_rt = current_time_ms() - begin_time
         kmonitor.report(
-            GaugeMetrics.PRE_PIPELINE_RT_METRIC, current_time_ms() - begin_time
+            GaugeMetrics.PRE_PIPELINE_RT_METRIC, pre_pipeline_rt
         )
         kmonitor.report(GaugeMetrics.NUM_BEAMS_METRIC, generate_config.max_num_beams())
         kmonitor.report(GaugeMetrics.INPUT_TOKEN_SIZE_METRIC, len(token_ids))
@@ -584,8 +585,9 @@ class Pipeline(object):
                     **kwargs,
                 )
 
+            post_pipeline_rt = current_time_ms() - begin_time
             kmonitor.report(
-                GaugeMetrics.POST_PIPELINE_RT_METRIC, current_time_ms() - begin_time
+                GaugeMetrics.POST_PIPELINE_RT_METRIC, post_pipeline_rt
             )
 
             yield GenerateResponse(

@@ -181,9 +181,15 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
     }
 
     auto new_tokens = new_tokens_all.narrow(0, batch_idx_out, next_batch_size);
-    for (size_t i = 0; i < next_batch_size; ++i) {
-        new_tokens.data_ptr<int32_t>()[i] =
-            new_all_token_ids.data_ptr<int32_t>()[(batch_idx_out + i) * token_stride + token_stride - 1];
+    if (sampler_output.token_ids_is_new_tokens) {
+        RTP_LLM_CHECK_WITH_INFO(!has_beam_search, "new-token sampler output is not supported for beam search");
+        RTP_LLM_CHECK_WITH_INFO(token_stride == 1, "new-token sampler output must have token stride 1");
+        new_tokens.copy_(batch_new_all_token_ids);
+    } else {
+        for (size_t i = 0; i < next_batch_size; ++i) {
+            new_tokens.data_ptr<int32_t>()[i] =
+                new_all_token_ids.data_ptr<int32_t>()[(batch_idx_out + i) * token_stride + token_stride - 1];
+        }
     }
 
     torch::Tensor current_softmax_result;

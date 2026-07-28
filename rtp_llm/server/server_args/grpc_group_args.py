@@ -40,3 +40,34 @@ def init_grpc_group_args(parser, grpc_config):
         default=default_json,
         help="gRPC configuration as JSON string. Format: {\"client_config\": {...}, \"server_config\": {...}}",
     )
+
+    ##############################################################################################################
+    # gRPC Sync Server Thread Pool Options
+    # Default gRPC: num_cqs=1, max_pollers=2 → only 2 threads, causing ~50ms queue wait at high concurrency.
+    # Set GRPC_MAX_POLLERS = max_concurrent_requests to avoid bottleneck.
+    ##############################################################################################################
+    grpc_group.add_argument(
+        "--grpc_num_cqs",
+        env_name="GRPC_NUM_CQS",
+        bind_to=(grpc_config, "num_cqs"),
+        type=int,
+        default=1,
+        help="Number of completion queues for gRPC sync server. Total threads = num_cqs * max_pollers.",
+    )
+    grpc_group.add_argument(
+        "--grpc_min_pollers",
+        env_name="GRPC_MIN_POLLERS",
+        bind_to=(grpc_config, "min_pollers"),
+        type=int,
+        default=1,
+        help="Min polling threads per completion queue for gRPC sync server.",
+    )
+    grpc_group.add_argument(
+        "--grpc_max_pollers",
+        env_name="GRPC_MAX_POLLERS",
+        bind_to=(grpc_config, "max_pollers"),
+        type=int,
+        default=16,
+        help="Max polling threads per completion queue for gRPC sync server. "
+             "Increase to max_concurrent_requests to eliminate gRPC layer queuing.",
+    )

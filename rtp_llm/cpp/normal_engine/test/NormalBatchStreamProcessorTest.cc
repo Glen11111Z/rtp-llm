@@ -180,7 +180,8 @@ TEST_F(NormalBatchStreamProcessorTest, testSoftmaxProbs) {
     auto          logits_tensor                = torch::tensor({1.0f, 2.0f}).reshape({1, 2}).to(torch::kCUDA);
     merge_outputs.model_output.hidden_states   = hidden_tensor;
     merge_outputs.model_output.logits          = logits_tensor;
-    merge_outputs.sampler_output.token_ids     = torch::tensor({0, 1}, torch::kInt32).reshape({1, 2});
+    merge_outputs.sampler_output.token_ids               = torch::tensor({1}, torch::kInt32).reshape({1, 1});
+    merge_outputs.sampler_output.token_ids_is_new_tokens = true;
     merge_outputs.sampler_output.cum_log_probs = torch::tensor({1.0f}).to(torch::kCUDA);
     auto status                                = processor.dispatch(stream_groups, merge_outputs);
     EXPECT_TRUE(status.ok());
