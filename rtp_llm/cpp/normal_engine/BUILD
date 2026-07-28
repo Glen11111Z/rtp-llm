@@ -25,6 +25,8 @@ cc_library(
         "//rtp_llm/cpp/cuda_graph:cuda_graph_base",
         "//rtp_llm/cpp/utils:tensor_debug_utils",
         "//rtp_llm/cpp/utils:profiling_scope",
+        "@havenask//aios/autil:env_util",
+        "@havenask//aios/autil:lock_free_thread_pool",
     ] + select({
         "//:using_cuda": [
             "//rtp_llm/models_py/bindings/cuda/ops:standalone_ops",

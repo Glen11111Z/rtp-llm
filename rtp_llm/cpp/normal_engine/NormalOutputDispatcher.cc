@@ -3,13 +3,63 @@
 #include "rtp_llm/cpp/utils/AssertUtils.h"
 #include "rtp_llm/cpp/utils/TensorDebugUtils.h"
 #include "rtp_llm/cpp/utils/ErrorCode.h"
+#include "autil/EnvUtil.h"
+#include "autil/LockFreeThreadPool.h"
+#include "autil/ThreadPool.h"
 #include "autil/TimeUtility.h"
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <vector>
 #if USING_CUDA
 #include "rtp_llm/models_py/bindings/cuda/ops/StandaloneOps.h"
 #include "ATen/cuda/CUDAContext.h"
 #endif
 
 namespace rtp_llm {
+namespace {
+
+struct DispatchStreamContext {
+    GenerateStreamPtr stream;
+    int               batch_idx_in;
+    int               batch_idx_out;
+    int               token_offset;
+    int               cur_batch_size;
+    int               next_batch_size;
+    int               token_size;
+};
+
+constexpr int kDefaultParallelDispatchThreshold = 8;
+constexpr int kDefaultParallelDispatchThreads   = 3;
+constexpr int kParallelDispatchQueueSize        = 10000;
+
+bool enableParallelOutputDispatch() {
+    return autil::EnvUtil::getEnv("ENABLE_PARALLEL_OUTPUT_DISPATCH", false);
+}
+
+int parallelOutputDispatchThreshold() {
+    return std::max(1, autil::EnvUtil::getEnv("PARALLEL_OUTPUT_DISPATCH_THRESHOLD", kDefaultParallelDispatchThreshold));
+}
+
+int parallelOutputDispatchThreads() {
+    return std::max(1, autil::EnvUtil::getEnv("PARALLEL_OUTPUT_DISPATCH_THREADS", kDefaultParallelDispatchThreads));
+}
+
+autil::ThreadPoolBasePtr parallelOutputDispatchThreadPool() {
+    static autil::ThreadPoolBasePtr thread_pool = []() {
+        auto thread_count = parallelOutputDispatchThreads();
+        auto pool = std::make_shared<autil::LockFreeThreadPool>(
+            thread_count, kParallelDispatchQueueSize, nullptr, "OutputDispatch");
+        RTP_LLM_CHECK_WITH_INFO(pool->start(), "OutputDispatch thread pool start failed");
+        return pool;
+    }();
+    return thread_pool;
+}
+
+}  // namespace
 
 absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
                                               const MergedOutput& merge_outputs) const {
@@ -36,26 +86,118 @@ absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
     int                 token_offset     = 0;
     bool                return_all_probs = stream_groups.needReturnAllProbs() != ReturnAllProbsMode::NONE;
     auto                new_tokens_all   = torch::empty({(int64_t)total_batch_size_out, 1}, torch::kInt32);
-
-    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    std::vector<DispatchStreamContext> dispatch_contexts;
+    dispatch_contexts.reserve(stream_groups.size());
+    bool has_cuda_heavy_stream     = false;
+    bool has_parallel_unsafe_stream = false;
     for (auto& stream : stream_groups.allStreams()) {
         auto cur_batch_size  = stream->currentBatchSize();
         auto next_batch_size = stream->nextBatchSize();
         auto token_size      = stream->currentExecuteTokenSize();
-
-        dispatchSingleStream(stream,
-                             merge_outputs,
-                             batch_idx_in,
-                             batch_idx_out,
-                             token_offset,
-                             return_all_probs,
-                             new_tokens_all,
-                             token_ids_cpu,
-                             success_cpu);
-
+        bool is_cuda_heavy_stream = stream->calculateSoftmaxProbs() || stream->calculateLoss()
+                                    || stream->returnPromptLogits();
+        bool is_special_stream = is_cuda_heavy_stream || stream->isContextStream() || stream->currentNumBeams() > 1
+                                 || stream->nextNumBeams() > 1;
+        has_cuda_heavy_stream      = has_cuda_heavy_stream || is_cuda_heavy_stream;
+        has_parallel_unsafe_stream = has_parallel_unsafe_stream || is_special_stream;
+        dispatch_contexts.push_back({stream,
+                                     batch_idx_in,
+                                     batch_idx_out,
+                                     token_offset,
+                                     static_cast<int>(cur_batch_size),
+                                     static_cast<int>(next_batch_size),
+                                     static_cast<int>(token_size)});
         batch_idx_in += cur_batch_size;
         batch_idx_out += next_batch_size;
         token_offset += token_size;
+    }
+
+    const int  parallel_threshold = parallelOutputDispatchThreshold();
+    const int  parallel_threads   = std::min<int>(parallelOutputDispatchThreads(), dispatch_contexts.size());
+    const bool parallel_dispatch  = enableParallelOutputDispatch() && !has_parallel_unsafe_stream
+                                   && static_cast<int>(dispatch_contexts.size()) >= parallel_threshold
+                                   && parallel_threads > 1;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    if (parallel_dispatch) {
+        auto                     thread_pool = parallelOutputDispatchThreadPool();
+        std::atomic<int64_t>     pending_count{0};
+        std::mutex               wait_mutex;
+        std::condition_variable  wait_cv;
+        std::mutex               exception_mutex;
+        std::exception_ptr       stored_exception;
+
+        for (const auto& context : dispatch_contexts) {
+            pending_count.fetch_add(1, std::memory_order_acq_rel);
+            auto rc = thread_pool->pushTask([&, context]() {
+                try {
+                    dispatchSingleStream(context.stream,
+                                         merge_outputs,
+                                         context.batch_idx_in,
+                                         context.batch_idx_out,
+                                         context.token_offset,
+                                         return_all_probs,
+                                         new_tokens_all,
+                                         token_ids_cpu,
+                                         success_cpu);
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(exception_mutex);
+                    if (!stored_exception) {
+                        stored_exception = std::current_exception();
+                    }
+                }
+                if (pending_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    std::lock_guard<std::mutex> lock(wait_mutex);
+                    wait_cv.notify_all();
+                }
+            });
+            if (rc != autil::ThreadPoolBase::ERROR_NONE) {
+                pending_count.fetch_sub(1, std::memory_order_acq_rel);
+                RTP_LLM_LOG_WARNING("parallel output dispatch pushTask failed, run stream [%ld] inline, rc=%d",
+                                    context.stream->streamId(),
+                                    static_cast<int>(rc));
+                try {
+                    dispatchSingleStream(context.stream,
+                                         merge_outputs,
+                                         context.batch_idx_in,
+                                         context.batch_idx_out,
+                                         context.token_offset,
+                                         return_all_probs,
+                                         new_tokens_all,
+                                         token_ids_cpu,
+                                         success_cpu);
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(exception_mutex);
+                    if (!stored_exception) {
+                        stored_exception = std::current_exception();
+                    }
+                }
+            }
+        }
+        {
+            std::unique_lock<std::mutex> lock(wait_mutex);
+            wait_cv.wait(lock, [&]() { return pending_count.load(std::memory_order_acquire) == 0; });
+        }
+        std::exception_ptr exception_to_rethrow;
+        {
+            std::lock_guard<std::mutex> lock(exception_mutex);
+            exception_to_rethrow = stored_exception;
+        }
+        if (exception_to_rethrow) {
+            std::rethrow_exception(exception_to_rethrow);
+        }
+    } else {
+        for (const auto& context : dispatch_contexts) {
+            dispatchSingleStream(context.stream,
+                                 merge_outputs,
+                                 context.batch_idx_in,
+                                 context.batch_idx_out,
+                                 context.token_offset,
+                                 return_all_probs,
+                                 new_tokens_all,
+                                 token_ids_cpu,
+                                 success_cpu);
+        }
     }
 
     stream_dispatch_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
@@ -64,7 +206,8 @@ absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
     RTP_LLM_LOG_INFO(
         "[PERF] dispatch_output_detail: total_us=%ld, token_ids_cpu_us=%ld, success_cpu_us=%ld, "
         "stream_dispatch_us=%ld, batch_size_out=%zu, stream_count=%zu, token_ids_is_new_tokens=%d, "
-        "token_ids_numel=%ld, success_numel=%ld, return_all_probs=%d",
+        "token_ids_numel=%ld, success_numel=%ld, return_all_probs=%d, parallel_dispatch=%d, "
+        "parallel_threads=%d, parallel_threshold=%d, has_cuda_heavy_stream=%d, has_parallel_unsafe_stream=%d",
         total_us,
         token_ids_cpu_us,
         success_cpu_us,
@@ -74,7 +217,12 @@ absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
         sampler_output.token_ids_is_new_tokens,
         sampler_output.token_ids.defined() ? sampler_output.token_ids.numel() : 0,
         sampler_output.success.defined() ? sampler_output.success.numel() : 0,
-        return_all_probs);
+        return_all_probs,
+        parallel_dispatch,
+        parallel_dispatch ? parallel_threads : 0,
+        parallel_threshold,
+        has_cuda_heavy_stream,
+        has_parallel_unsafe_stream);
 
     RTP_LLM_LOG_DEBUG("dispatch done");
     return absl::OkStatus();
