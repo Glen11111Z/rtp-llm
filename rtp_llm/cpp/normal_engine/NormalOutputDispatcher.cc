@@ -32,12 +32,13 @@ struct DispatchStreamContext {
     int               token_size;
 };
 
-constexpr int kDefaultParallelDispatchThreshold = 8;
-constexpr int kDefaultParallelDispatchThreads   = 3;
-constexpr int kParallelDispatchQueueSize        = 10000;
+constexpr int  kDefaultParallelDispatchThreshold = 8;
+constexpr int  kDefaultParallelDispatchThreads   = 3;
+constexpr int  kParallelDispatchQueueSize        = 10000;
+constexpr bool kDefaultEnableParallelDispatch    = true;
 
 bool enableParallelOutputDispatch() {
-    return autil::EnvUtil::getEnv("ENABLE_PARALLEL_OUTPUT_DISPATCH", false);
+    return autil::EnvUtil::getEnv("ENABLE_PARALLEL_OUTPUT_DISPATCH", kDefaultEnableParallelDispatch);
 }
 
 int parallelOutputDispatchThreshold() {
@@ -96,8 +97,7 @@ absl::Status NormalOutputDispatcher::dispatch(const StreamGroups& stream_groups,
         auto token_size      = stream->currentExecuteTokenSize();
         bool is_cuda_heavy_stream = stream->calculateSoftmaxProbs() || stream->calculateLoss()
                                     || stream->returnPromptLogits();
-        bool is_special_stream = is_cuda_heavy_stream || stream->isContextStream() || stream->currentNumBeams() > 1
-                                 || stream->nextNumBeams() > 1;
+        bool is_special_stream = is_cuda_heavy_stream || stream->currentNumBeams() > 1 || stream->nextNumBeams() > 1;
         has_cuda_heavy_stream      = has_cuda_heavy_stream || is_cuda_heavy_stream;
         has_parallel_unsafe_stream = has_parallel_unsafe_stream || is_special_stream;
         dispatch_contexts.push_back({stream,
