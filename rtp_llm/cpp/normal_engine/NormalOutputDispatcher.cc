@@ -7,6 +7,7 @@
 #include "autil/LockFreeThreadPool.h"
 #include "autil/ThreadPool.h"
 #include "autil/TimeUtility.h"
+#include <c10/core/InferenceMode.h>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -237,6 +238,7 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
                                                   const torch::Tensor& new_tokens_all,
                                                   const torch::Tensor& token_ids_cpu,
                                                   const torch::Tensor& success_cpu) const {
+    c10::InferenceMode inference_guard(true);
 
     const auto&  model_output      = merge_outputs.model_output;
     const auto&  sampler_output    = merge_outputs.sampler_output;
