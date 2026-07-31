@@ -70,6 +70,9 @@ _SANITIZE_WARN_INTERVAL = 300  # seconds
 _last_sanitize_warn_time: float = 0.0
 _last_downgrade_warn_time: float = 0.0
 
+_DEFAULT_SELECT_TOKENS_STR = ["0", "1", "2", "3"]
+_DEFAULT_SELECT_TOKENS_ID_CACHE: Dict[tuple, List[int]] = {}
+
 
 def _reset_sanitize_warn_state():
     """Reset rate-limiting state for testing. NOT for production use."""
@@ -464,7 +467,29 @@ class GenerateConfig(BaseModel):
         config.validate()
         return config
 
+    @staticmethod
+    def _default_select_tokens_id(vocab_size, tokenizer) -> List[int]:
+        if tokenizer is None:
+            return []
+        cache_key = (id(tokenizer), vocab_size)
+        cached_tokens = _DEFAULT_SELECT_TOKENS_ID_CACHE.get(cache_key)
+        if cached_tokens is not None:
+            return list(cached_tokens)
+
+        select_tokens_id: List[int] = []
+        for token_str in _DEFAULT_SELECT_TOKENS_STR:
+            select_tokens_id += tokenizer.encode(token_str)
+        _DEFAULT_SELECT_TOKENS_ID_CACHE[cache_key] = list(select_tokens_id)
+        logging.info(
+            "default select_tokens_id initialized once: select_tokens_str=%s, select_tokens_id=%s",
+            _DEFAULT_SELECT_TOKENS_STR,
+            select_tokens_id,
+        )
+        return select_tokens_id
+
     def convert_select_tokens(self, vocab_size, tokenizer):
+        if not self.select_tokens_id and not self.select_tokens_str:
+            self.select_tokens_id = self._default_select_tokens_id(vocab_size, tokenizer)
         for token_str in self.select_tokens_str:
             self.select_tokens_id += tokenizer.encode(token_str)
         if not all(

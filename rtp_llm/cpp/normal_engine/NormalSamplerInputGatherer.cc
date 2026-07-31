@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <vector>
 #include "torch/all.h"
 #include "rtp_llm/cpp/normal_engine/NormalSamplerInputGatherer.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
@@ -7,6 +8,24 @@
 #include "rtp_llm/cpp/utils/TensorDebugUtils.h"
 
 namespace rtp_llm {
+
+namespace {
+
+bool collectSharedCandidateTokenIds(const std::list<GenerateStreamPtr>& all_streams,
+                                    std::vector<int>&                   shared_candidate_token_ids) {
+    if (all_streams.empty()) {
+        return false;
+    }
+
+    shared_candidate_token_ids = all_streams.front()->generateConfig()->select_tokens_id;
+    if (shared_candidate_token_ids.empty()) {
+        return false;
+    }
+
+    return true;
+}
+
+}  // namespace
 
 absl::StatusOr<SamplerInputs> NormalSamplerInputGatherer::gather(const StreamGroups&    stream_groups,
                                                                  const GptModelInputs&  model_inputs,
@@ -59,6 +78,29 @@ absl::StatusOr<SamplerInputs> NormalSamplerInputGatherer::gather(const StreamGro
 
     auto vocab_size           = (size_t)model_output.logits.size(1);
     sampler_inputs.vocab_size = vocab_size;
+
+    std::vector<int> shared_candidate_token_ids;
+    if (collectSharedCandidateTokenIds(all_streams, shared_candidate_token_ids)) {
+        bool candidate_tokens_valid = std::all_of(shared_candidate_token_ids.begin(),
+                                                  shared_candidate_token_ids.end(),
+                                                  [vocab_size](int token_id) {
+                                                      return token_id >= 0 && static_cast<size_t>(token_id) < vocab_size;
+                                                  });
+        if (candidate_tokens_valid) {
+            std::vector<int64_t> candidate_token_ids(shared_candidate_token_ids.begin(),
+                                                     shared_candidate_token_ids.end());
+            sampler_inputs.candidate_token_ids = torch::tensor(candidate_token_ids, torch::kLong);
+            sampler_inputs.candidate_tokens_same_batch = true;
+            RTP_LLM_LOG_INFO(
+                "[PERF] sampler_candidate_tokens: candidate_same_batch=1, candidate_num=%zu, source=first_stream",
+                candidate_token_ids.size());
+        } else {
+            RTP_LLM_LOG_WARNING(
+                "skip candidate token sampling because select_tokens_id contains invalid token id, vocab_size=%zu",
+                vocab_size);
+        }
+    }
+
     if (return_all_probs != ReturnAllProbsMode::NONE) {
         sampler_inputs.all_probs = torch::zeros({(int64_t)total_batch_size_in, (int64_t)vocab_size},
                                                 torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));

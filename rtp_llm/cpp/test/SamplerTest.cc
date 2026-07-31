@@ -52,6 +52,46 @@ TEST_F(SamplerTest, testFixedGreedySamplingBuffersRejectGrow) {
     EXPECT_THROW(sampler.ensureGreedySamplingBuffers(2), rtp_llm::RTPException);
 }
 
+TEST_F(SamplerTest, testCandidateGreedyFastPath) {
+    size_t batch_size = 3;
+    size_t vocab_size = 6;
+
+    auto logits = torch::tensor({0.0f, 2.0f, 0.0f, 3.0f, 0.0f, 10.0f,
+                                 0.0f, 4.0f, 0.0f, 1.0f, 0.0f, 9.0f,
+                                 0.0f, 1.0f, 0.0f, 5.0f, 0.0f, 8.0f},
+                                torch::kFloat32)
+                      .reshape({(int64_t)batch_size, (int64_t)vocab_size})
+                      .to(torch::kCUDA);
+
+    SamplerInputs inputs;
+    inputs.logits           = logits;
+    inputs.token_ids        = torch::zeros({(int64_t)batch_size, 1}, torch::kInt32);
+    inputs.input_lengths    = torch::ones({(int64_t)batch_size}, torch::kInt32);
+    inputs.sequence_lengths = torch::ones({(int64_t)batch_size}, torch::kInt32);
+    inputs.vocab_size       = vocab_size;
+    inputs.step             = 0;
+    inputs.batch_size       = batch_size;
+    inputs.batch_size_out   = batch_size;
+    inputs.num_beams_in     = torch::ones({(int64_t)batch_size}, torch::kLong);
+    inputs.num_beams_out    = torch::ones({(int64_t)batch_size}, torch::kLong);
+    inputs.top_k            = torch::ones({(int64_t)batch_size}, torch::kInt32).pin_memory();
+    inputs.repetition_penalty = torch::ones({(int64_t)batch_size}, torch::kFloat32).pin_memory();
+    inputs.presence_penalty   = torch::zeros({(int64_t)batch_size}, torch::kFloat32).pin_memory();
+    inputs.frequency_penalty  = torch::zeros({(int64_t)batch_size}, torch::kFloat32).pin_memory();
+    inputs.generator.resize(batch_size);
+    inputs.candidate_token_ids        = torch::tensor({1L, 3L}, torch::kLong);
+    inputs.candidate_tokens_same_batch = true;
+
+    auto outputs = sampler_->forward(inputs);
+
+    ASSERT_TRUE(outputs.token_ids_is_new_tokens);
+    auto token_ids_cpu = outputs.token_ids.cpu().contiguous();
+    std::vector<int32_t> actual(token_ids_cpu.data_ptr<int32_t>(),
+                                token_ids_cpu.data_ptr<int32_t>() + token_ids_cpu.numel());
+    std::vector<int32_t> expected = {3, 1, 3};
+    ASSERT_EQ(expected, actual);
+}
+
 TEST_F(SamplerTest, testGeneralSampling) {
     size_t batch_size = 5;
     size_t vocab_size = 8;

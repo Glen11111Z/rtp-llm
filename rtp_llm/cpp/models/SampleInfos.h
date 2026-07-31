@@ -28,7 +28,8 @@ public:
                      << ", token_ids: " << tensorDebugStringWithData<int32_t>(token_ids)
                      << ", input_lengths: " << tensorDebugStringWithData<int32_t>(input_lengths)
                      << ", sequence_lengths: " << tensorDebugStringWithData<int32_t>(sequence_lengths)
-                     << ", cum_log_probs: " << tensorDebugStringWithData<float>(cum_log_probs) << "}";
+                     << ", cum_log_probs: " << tensorDebugStringWithData<float>(cum_log_probs)
+                     << ", candidate_token_ids: " << tensorDebugStringWithData<int64_t>(candidate_token_ids) << "}";
         return debug_string.str();
     }
 
@@ -63,6 +64,11 @@ public:
     mutable torch::Tensor all_probs;      // shape: [batch_size, vocab_size]
 
     std::vector<at::Generator> generator;
+
+    // Optional candidate token set shared by the whole sampler batch. When defined, greedy fast path
+    // can select only within this set and map the winner back to the original vocab token id.
+    torch::Tensor candidate_token_ids;  // shape: [candidate_num], dtype: int64/int32
+    bool          candidate_tokens_same_batch = false;
 };
 
 struct SamplerOutput {

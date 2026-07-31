@@ -152,6 +152,36 @@ class GenerateConfigTest(TestCase):
                 generate_env_config=GenerateEnvConfig(),
             )
 
+    def test_default_select_tokens_id_cached(self):
+        class FakeTokenizer:
+            def __init__(self):
+                self.encode_calls = 0
+                self.token_id_map = {"0": [10], "1": [11], "2": [12], "3": [13]}
+
+            def encode(self, token_str):
+                self.encode_calls += 1
+                return self.token_id_map[token_str]
+
+        tokenizer = FakeTokenizer()
+        first_config = GenerateConfig()
+        first_config.convert_select_tokens(100, tokenizer)
+        self.assertEqual(first_config.select_tokens_id, [10, 11, 12, 13])
+        self.assertEqual(tokenizer.encode_calls, 4)
+
+        second_config = GenerateConfig()
+        second_config.convert_select_tokens(100, tokenizer)
+        self.assertEqual(second_config.select_tokens_id, [10, 11, 12, 13])
+        self.assertEqual(tokenizer.encode_calls, 4)
+
+    def test_explicit_select_tokens_id_skip_default(self):
+        class FakeTokenizer:
+            def encode(self, token_str):
+                raise AssertionError("default tokenizer lookup should not run for explicit select_tokens_id")
+
+        generate_config = GenerateConfig(select_tokens_id=[1, 3])
+        generate_config.convert_select_tokens(100, FakeTokenizer())
+        self.assertEqual(generate_config.select_tokens_id, [1, 3])
+
     def test_same(self):
         special_tokens = SpecialTokens()
         special_tokens.stop_words_id_list = [[1233, 19912]]
