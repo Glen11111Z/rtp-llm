@@ -85,6 +85,7 @@ TEST_F(SamplerTest, testCandidateGreedyFastPath) {
     auto outputs = sampler_->forward(inputs);
 
     ASSERT_TRUE(outputs.token_ids_is_new_tokens);
+    ASSERT_FALSE(outputs.token_ids.is_cuda());
     auto token_ids_cpu = outputs.token_ids.cpu().contiguous();
     std::vector<int32_t> actual(token_ids_cpu.data_ptr<int32_t>(),
                                 token_ids_cpu.data_ptr<int32_t>() + token_ids_cpu.numel());
@@ -96,6 +97,7 @@ TEST_F(SamplerTest, testCandidateGreedyFastPath) {
 
     inputs.candidate_token_ids = torch::tensor({1L, 3L}, torch::kLong);
     outputs = sampler_->forward(inputs);
+    ASSERT_FALSE(outputs.token_ids.is_cuda());
     ASSERT_EQ(cached_candidate_token_ids_ptr, sampler_->cached_candidate_token_ids_device_tensor_.data_ptr<int64_t>());
 
     token_ids_cpu = outputs.token_ids.cpu().contiguous();
