@@ -33,10 +33,11 @@ struct DispatchStreamContext {
     int               token_size;
 };
 
-constexpr int  kDefaultParallelDispatchThreshold = 8;
-constexpr int  kDefaultParallelDispatchThreads   = 3;
-constexpr int  kParallelDispatchQueueSize        = 10000;
-constexpr bool kDefaultEnableParallelDispatch    = true;
+constexpr int  kDefaultParallelDispatchThreshold             = 8;
+constexpr int  kDefaultParallelDispatchThreads               = 3;
+constexpr int  kDefaultDispatchSingleStreamDetailThresholdUs = 1000;
+constexpr int  kParallelDispatchQueueSize                    = 10000;
+constexpr bool kDefaultEnableParallelDispatch                = true;
 
 bool enableParallelOutputDispatch() {
     return autil::EnvUtil::getEnv("ENABLE_PARALLEL_OUTPUT_DISPATCH", kDefaultEnableParallelDispatch);
@@ -48,6 +49,12 @@ int parallelOutputDispatchThreshold() {
 
 int parallelOutputDispatchThreads() {
     return std::max(1, autil::EnvUtil::getEnv("PARALLEL_OUTPUT_DISPATCH_THREADS", kDefaultParallelDispatchThreads));
+}
+
+int dispatchSingleStreamDetailThresholdUs() {
+    return std::max(0,
+                    autil::EnvUtil::getEnv("DISPATCH_SINGLE_STREAM_DETAIL_THRESHOLD_US",
+                                           kDefaultDispatchSingleStreamDetailThresholdUs));
 }
 
 autil::ThreadPoolBasePtr parallelOutputDispatchThreadPool() {
@@ -424,26 +431,31 @@ void NormalOutputDispatcher::dispatchSingleStream(GenerateStreamPtr    stream,
                     prompt_logits_output});
     stream_update_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
-    RTP_LLM_LOG_INFO(
-        "[PERF] dispatch_single_stream_detail: request_id=%ld, stream_id=%ld, total_us=%ld, "
-        "prepare_update_us=%ld, new_tokens_us=%ld, softmax_us=%ld, success_check_us=%ld, "
-        "stream_update_us=%ld, cur_batch_size=%d, next_batch_size=%d, token_size=%d, "
-        "has_beam_search=%d, has_var_batch=%d, return_all_probs=%d, token_ids_is_new_tokens=%d",
-        stream->generateInput()->request_id,
-        stream->streamId(),
-        autil::TimeUtility::currentTimeInMicroSeconds() - stream_start_us,
-        prepare_update_us,
-        new_tokens_us,
-        softmax_us,
-        success_check_us,
-        stream_update_us,
-        cur_batch_size,
-        next_batch_size,
-        token_size,
-        has_beam_search,
-        has_var_batch,
-        return_all_probs,
-        sampler_output.token_ids_is_new_tokens);
+    const int64_t total_us            = autil::TimeUtility::currentTimeInMicroSeconds() - stream_start_us;
+    const int     detail_threshold_us = dispatchSingleStreamDetailThresholdUs();
+    if (total_us >= detail_threshold_us) {
+        RTP_LLM_LOG_INFO(
+            "[PERF] dispatch_single_stream_detail: request_id=%ld, stream_id=%ld, total_us=%ld, "
+            "detail_threshold_us=%d, prepare_update_us=%ld, new_tokens_us=%ld, softmax_us=%ld, "
+            "success_check_us=%ld, stream_update_us=%ld, cur_batch_size=%d, next_batch_size=%d, token_size=%d, "
+            "has_beam_search=%d, has_var_batch=%d, return_all_probs=%d, token_ids_is_new_tokens=%d",
+            stream->generateInput()->request_id,
+            stream->streamId(),
+            total_us,
+            detail_threshold_us,
+            prepare_update_us,
+            new_tokens_us,
+            softmax_us,
+            success_check_us,
+            stream_update_us,
+            cur_batch_size,
+            next_batch_size,
+            token_size,
+            has_beam_search,
+            has_var_batch,
+            return_all_probs,
+            sampler_output.token_ids_is_new_tokens);
+    }
 }
 
 }  // namespace rtp_llm
