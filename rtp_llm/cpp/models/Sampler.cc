@@ -85,6 +85,29 @@ void Sampler::markGreedySamplingBufferReady() {
     }
 }
 
+torch::Tensor Sampler::candidateTokenIdsOnLogitsDevice(const torch::Tensor& candidate_token_ids,
+                                                       const torch::Device& logits_device) {
+    auto candidate_token_ids_host = candidate_token_ids.to(torch::kCPU).to(torch::kLong).contiguous();
+    std::vector<int64_t> candidate_token_ids_vec(candidate_token_ids_host.data_ptr<int64_t>(),
+                                                 candidate_token_ids_host.data_ptr<int64_t>()
+                                                     + candidate_token_ids_host.numel());
+    auto logits_device_str = logits_device.str();
+
+    if (cached_candidate_token_ids_device_tensor_.defined()
+        && cached_candidate_token_ids_device_ == logits_device_str
+        && cached_candidate_token_ids_host_ == candidate_token_ids_vec) {
+        return cached_candidate_token_ids_device_tensor_;
+    }
+
+    cached_candidate_token_ids_host_          = std::move(candidate_token_ids_vec);
+    cached_candidate_token_ids_device_        = logits_device_str;
+    cached_candidate_token_ids_device_tensor_ = candidate_token_ids_host.to(logits_device);
+    RTP_LLM_LOG_INFO("[PERF] sampler_candidate_token_ids_cache: refreshed=1, candidate_num=%ld, device=%s",
+                     cached_candidate_token_ids_device_tensor_.numel(),
+                     cached_candidate_token_ids_device_.c_str());
+    return cached_candidate_token_ids_device_tensor_;
+}
+
 SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
     RTP_LLM_LOG_DEBUG(__PRETTY_FUNCTION__);
     RTP_LLM_PROFILE_SCOPE("sampler.forward");
@@ -178,7 +201,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         torch::Tensor new_token_ids;
         if (candidate_greedy_fast_path) {
             int64_t candidate_stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
-            auto candidate_token_ids = inputs.candidate_token_ids.to(torch::kLong).to(inputs.logits.device());
+            auto candidate_token_ids = candidateTokenIdsOnLogitsDevice(inputs.candidate_token_ids, inputs.logits.device());
             auto candidate_logits = inputs.logits.index_select(1, candidate_token_ids);
             candidate_gather_us = autil::TimeUtility::currentTimeInMicroSeconds() - candidate_stage_start_us;
 

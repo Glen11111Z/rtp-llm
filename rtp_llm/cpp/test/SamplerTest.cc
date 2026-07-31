@@ -90,6 +90,18 @@ TEST_F(SamplerTest, testCandidateGreedyFastPath) {
                                 token_ids_cpu.data_ptr<int32_t>() + token_ids_cpu.numel());
     std::vector<int32_t> expected = {3, 1, 3};
     ASSERT_EQ(expected, actual);
+
+    ASSERT_TRUE(sampler_->cached_candidate_token_ids_device_tensor_.defined());
+    auto* cached_candidate_token_ids_ptr = sampler_->cached_candidate_token_ids_device_tensor_.data_ptr<int64_t>();
+
+    inputs.candidate_token_ids = torch::tensor({1L, 3L}, torch::kLong);
+    outputs = sampler_->forward(inputs);
+    ASSERT_EQ(cached_candidate_token_ids_ptr, sampler_->cached_candidate_token_ids_device_tensor_.data_ptr<int64_t>());
+
+    token_ids_cpu = outputs.token_ids.cpu().contiguous();
+    actual = std::vector<int32_t>(token_ids_cpu.data_ptr<int32_t>(),
+                                  token_ids_cpu.data_ptr<int32_t>() + token_ids_cpu.numel());
+    ASSERT_EQ(expected, actual);
 }
 
 TEST_F(SamplerTest, testGeneralSampling) {

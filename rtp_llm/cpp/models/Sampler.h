@@ -6,6 +6,8 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace rtp_llm {
 // Sampler would split logits into appropriate groups (mostly, based on beam size)
@@ -26,6 +28,8 @@ private:
     void                   waitGreedySamplingBufferEvents();
     GreedySamplingBuffers& nextGreedySamplingBuffers(size_t batch_size);
     void                   markGreedySamplingBufferReady();
+    torch::Tensor          candidateTokenIdsOnLogitsDevice(const torch::Tensor& candidate_token_ids,
+                                                           const torch::Device& logits_device);
 
     struct GreedySamplingBufferSlot {
         GreedySamplingBuffers         buffers;
@@ -41,6 +45,9 @@ private:
     size_t                                                           greedy_sampling_buffer_index_ = 0;
     GreedySamplingBufferSlot*                                        current_greedy_sampling_slot_ = nullptr;
     std::array<GreedySamplingBufferSlot, kGreedySamplingBufferSlots> greedy_sampling_buffer_slots_;
+    std::vector<int64_t>                                             cached_candidate_token_ids_host_;
+    std::string                                                      cached_candidate_token_ids_device_;
+    torch::Tensor                                                    cached_candidate_token_ids_device_tensor_;
     std::atomic<bool>                                                forward_in_progress_{false};
 };
 
