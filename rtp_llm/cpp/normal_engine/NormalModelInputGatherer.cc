@@ -208,8 +208,7 @@ bool streamSupportsCandidateModelLogits(const GenerateStreamPtr& stream) {
     const int no_repeat_ngram_size = config->no_repeat_ngram_size.value_or(0);
     return config->top_k == 1 && config->repetition_penalty == 1.0f && config->presence_penalty == 0.0f
            && config->frequency_penalty == 0.0f && no_repeat_ngram_size == 0
-           && config->return_all_probs == ReturnAllProbsMode::NONE && config->stop_words_list.empty()
-           && config->banned_combo_token_ids.empty();
+           && config->return_all_probs == ReturnAllProbsMode::NONE;
 }
 
 void setSharedCandidateTokenIdsForModel(GptModelInputs& model_input, const StreamGroups& stream_groups, size_t vocab_size) {
