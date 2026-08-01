@@ -65,6 +65,9 @@ std::string GptModelInputs::debugString(bool force) const {
     if (cache_keys.defined()) {
         debug_string << ", cache_keys: " << tb(cache_keys);
     }
+    if (candidate_token_ids.defined()) {
+        debug_string << ", candidate_token_ids: " << tb(candidate_token_ids);
+    }
     debug_string << ", kv_block_stride_bytes: " << kv_block_stride_bytes;
     debug_string << ", pd_separation: " << pd_separation;
     debug_string << "}";

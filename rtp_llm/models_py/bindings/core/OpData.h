@@ -83,6 +83,8 @@ struct GptModelInputs {
     bool skip_run        = false;
     bool is_fake_stream  = false;
 
+    torch::Tensor candidate_token_ids;  // [candidate_num], CPU tensor. Enables lm_head candidate logits fast path.
+
     // Linear attention target verify should write draft tokens mamba states
     // to extra kv_cache blocks when normal inference only write last token mamba state.
     // So, the model has different inference logic for target verify and normal inference.
@@ -102,6 +104,8 @@ struct GptModelOutputs {
     torch::Tensor all_hidden_states;
     torch::Tensor all_logits;
     torch::Tensor softmax_result;
+    bool          logits_is_candidate_tokens = false;
+    torch::Tensor candidate_token_ids;
 
     std::vector<torch::Tensor> moe_gating;
 };

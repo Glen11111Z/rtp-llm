@@ -132,6 +132,8 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
     int64_t                        kv_cache_update_us       = 0;
     int64_t                        sampler_gather_input_us  = 0;
     int64_t                        sampler_forward_us       = 0;
+    int64_t                        model_forward_done_abs_us = 0;
+    int64_t                        sampler_done_abs_us       = 0;
     RTP_LLM_PROFILE_FUNCTION();
     {
         RTP_LLM_PROFILE_SCOPE("executor.gather_model_input");
@@ -178,7 +180,8 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
                                       stream_groups.maxSeqLen());
         int64_t start_time_us               = autil::TimeUtility::currentTimeInMicroSeconds();
         model_output                        = std::move(model_->forward(model_input));
-        executor_collector.model_forward_us = autil::TimeUtility::currentTimeInMicroSeconds() - start_time_us;
+        model_forward_done_abs_us           = autil::TimeUtility::currentTimeInMicroSeconds();
+        executor_collector.model_forward_us = model_forward_done_abs_us - start_time_us;
     }
     if (expert_balancer_) {
         int64_t start_time_us = autil::TimeUtility::currentTimeInMicroSeconds();
@@ -199,6 +202,7 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
         int64_t sampler_input_done_us = autil::TimeUtility::currentTimeInMicroSeconds();
         sampler_output                = std::move(sampler_->forward(sampler_input));
         int64_t sampler_done_us       = autil::TimeUtility::currentTimeInMicroSeconds();
+        sampler_done_abs_us           = sampler_done_us;
         RTP_LLM_LOG_DEBUG("sampler forward done");
         sampler_gather_input_us             = sampler_input_done_us - start_time_us;
         sampler_forward_us                  = sampler_done_us - sampler_input_done_us;
@@ -228,8 +232,9 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
             RTP_LLM_LOG_INFO(
                 "[PERF] first_token_stages: request_id=%ld, stream_id=%ld, first_token_latency_us=%ld, "
                 "wait_latency_us=%ld, pure_infer_us=%ld, gather_model_input_us=%ld, tp_sync_input_us=%ld, "
-                "kv_cache_update_us=%ld, model_forward_us=%ld, sampler_gather_input_us=%ld, "
-                "sampler_forward_us=%ld, dispatch_output_us=%ld, eplb_step_us=%ld, "
+                "kv_cache_update_us=%ld, model_forward_us=%ld, model_forward_done_abs_us=%ld, "
+                "sampler_gather_input_us=%ld, sampler_forward_us=%ld, sampler_done_abs_us=%ld, "
+                "dispatch_output_us=%ld, eplb_step_us=%ld, "
                 "ctx_batch=%zu, decode_batch=%zu, execute_tokens=%zu, max_seq_len=%zu",
                 stream->generateInput()->request_id,
                 stream->streamId(),
@@ -240,8 +245,10 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& streams
                 executor_collector.tp_sync_input_us,
                 kv_cache_update_us,
                 executor_collector.model_forward_us,
+                model_forward_done_abs_us,
                 sampler_gather_input_us,
                 sampler_forward_us,
+                sampler_done_abs_us,
                 executor_collector.dispatch_output_us,
                 executor_collector.eplb_step_latency_us,
                 stream_groups.totalContextBatchSize(),

@@ -484,12 +484,15 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
             used_micro_batch = true;
             int64_t micro_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
             auto    outputs        = forwardMicroBatched(inputs);
+            int64_t finish_abs_us = autil::TimeUtility::currentTimeInMicroSeconds();
             RTP_LLM_LOG_INFO(
-                "[PERF] model_forward_detail: total_us=%ld, input_prepare_us=%ld, context_parallel_in_us=%ld, "
-                "fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, hidden_clone_us=%ld, "
-                "cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, ctx_batch=%ld, "
-                "decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d",
-                autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us,
+                "[PERF] model_forward_detail: total_us=%ld, finish_abs_us=%ld, input_prepare_us=%ld, "
+                "context_parallel_in_us=%ld, fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, "
+                "hidden_clone_us=%ld, cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, "
+                "ctx_batch=%ld, decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d, "
+                "logits_is_candidate_tokens=%d, logits_rows=%ld, logits_cols=%ld",
+                finish_abs_us - forward_start_us,
+                finish_abs_us,
                 autil::TimeUtility::currentTimeInMicroSeconds() - micro_start_us,
                 context_parallel_in_us,
                 fused_copy_us,
@@ -503,7 +506,10 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
                 decode_batch_size,
                 execute_tokens,
                 used_cuda_graph,
-                used_micro_batch);
+                used_micro_batch,
+                outputs.logits_is_candidate_tokens,
+                outputs.logits.defined() ? outputs.logits.size(0) : 0,
+                outputs.logits.defined() ? outputs.logits.size(1) : 0);
             return outputs;
         }
         PyContextParallelParams cp_params;
@@ -616,12 +622,15 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
             outputs = callForwardPostLayers(hidden_states, inputs, true);
             post_layers_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
         }
+        int64_t finish_abs_us = autil::TimeUtility::currentTimeInMicroSeconds();
         RTP_LLM_LOG_INFO(
-            "[PERF] model_forward_detail: total_us=%ld, input_prepare_us=%ld, context_parallel_in_us=%ld, "
-            "fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, hidden_clone_us=%ld, "
-            "cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, ctx_batch=%ld, "
-            "decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d",
-            autil::TimeUtility::currentTimeInMicroSeconds() - forward_start_us,
+            "[PERF] model_forward_detail: total_us=%ld, finish_abs_us=%ld, input_prepare_us=%ld, "
+            "context_parallel_in_us=%ld, fused_copy_us=%ld, prepare_fmha_us=%ld, py_forward_us=%ld, "
+            "hidden_clone_us=%ld, cache_store_wait_us=%ld, context_parallel_out_us=%ld, post_layers_us=%ld, "
+            "ctx_batch=%ld, decode_batch=%ld, execute_tokens=%ld, used_cuda_graph=%d, used_micro_batch=%d, "
+            "logits_is_candidate_tokens=%d, logits_rows=%ld, logits_cols=%ld",
+            finish_abs_us - forward_start_us,
+            finish_abs_us,
             input_prepare_us,
             context_parallel_in_us,
             fused_copy_us,
@@ -635,7 +644,10 @@ GptModelOutputs PyWrappedModel::forward(const GptModelInputs& inputs) {
             decode_batch_size,
             execute_tokens,
             used_cuda_graph,
-            used_micro_batch);
+            used_micro_batch,
+            outputs.logits_is_candidate_tokens,
+            outputs.logits.defined() ? outputs.logits.size(0) : 0,
+            outputs.logits.defined() ? outputs.logits.size(1) : 0);
         return outputs;
 
     } catch (const py::error_already_set& e) {
@@ -699,6 +711,19 @@ GptModelOutputs PyWrappedModel::forwardPostLayers(torch::Tensor         hidden,
                                                   torch::Tensor         merged_eagle3_hidden,
                                                   bool                  skip_final_layernorm) {
     DevicePerfWrapper wrapper(enable_device_perf_, "forwardPostLayers");
+    const int64_t post_layers_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    int64_t       sp_all_gather_us = 0;
+    int64_t       final_layernorm_us = 0;
+    int64_t       lm_output_indexes_cuda_us = 0;
+    int64_t       last_hidden_select_us = 0;
+    int64_t       candidate_weight_select_us = 0;
+    int64_t       lm_head_mm_us = 0;
+    int64_t       tp_sync_logits_us = 0;
+    int64_t       all_logits_select_us = 0;
+    bool          candidate_lm_head = false;
+    torch::Tensor output_candidate_token_ids;
+
+    int64_t stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     if (enable_sp && device_props_.tp_size > 1) {
         auto ag_tensor =
             torch::empty({(int64_t)(hidden.size(0) * device_props_.tp_size), hidden.size(1)}, hidden.options());
@@ -732,7 +757,9 @@ GptModelOutputs PyWrappedModel::forwardPostLayers(torch::Tensor         hidden,
             hidden = ag_tensor;
         }
     }
+    sp_all_gather_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
 
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
     if (weights_.final_layernorm && !skip_final_layernorm) {
         const auto& norm_w = *weights_.final_layernorm;
         const auto  eps    = description_.layernorm_eps;
@@ -748,47 +775,146 @@ GptModelOutputs PyWrappedModel::forwardPostLayers(torch::Tensor         hidden,
             hidden                = torch::layer_norm(hidden, normalized_shape, norm_w.gamma, beta, eps);
         }
     }
+    final_layernorm_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
     printTorchTensorData(hidden, "final_hidden");
 
     const auto& lm_head = weights_.lm_head;
-
-    if (lm_head) {
-        printTorchTensorData(lm_output_indexes, "lm_output_indexes");
-
-        buffer_holder_.hold_host(lm_output_indexes);
-        auto lm_output_indexes_device = lm_output_indexes.to(torch::kCUDA, /*non_blocking=*/true);
-
-        torch::Tensor last_hidden;
-        if (has_context_request && !need_all_logits) {
-            last_hidden = torch::index_select(hidden, 0, lm_output_indexes_device.to(torch::kLong));
-        } else {
-            last_hidden = hidden;
-        }
-
-        printTorchTensorData(last_hidden, "last_hidden");
-
-        auto logits = torch::mm(last_hidden.to(lm_head->kernel.dtype()), lm_head->kernel.t()).to(torch::kFloat32);
-        printTorchTensorData(logits, "logits");
-        if (device_props_.tp_size > 1) {
-            logits = tpSyncEmbeddingOrLogits(logits);
-        }
-        if (check_nan_) {
-            RTP_LLM_CHECK_WITH_INFO(!torch::isnan(last_hidden).any().item<bool>(), "NAN detected in last_hidden");
-            RTP_LLM_CHECK_WITH_INFO(!torch::isnan(logits).any().item<bool>(), "NAN detected in logits");
-        }
-        torch::Tensor softmax_result_t;
-        if (need_all_logits) {
-            auto last_logits = torch::index_select(logits, 0, lm_output_indexes_device.to(torch::kLong));
-            return {last_logits, last_hidden, hidden, logits, softmax_result_t};
-        }
-
-        if (merged_eagle3_hidden.defined()) {
-            hidden = merged_eagle3_hidden;
-        }
-        return {logits, last_hidden, hidden, torch::Tensor(), softmax_result_t};
-    } else {
+    if (!lm_head) {
+        const int64_t finish_abs_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        RTP_LLM_LOG_INFO(
+            "[PERF] model_forward_post_layers_detail: total_us=%ld, finish_abs_us=%ld, sp_all_gather_us=%ld, "
+            "final_layernorm_us=%ld, lm_output_indexes_cuda_us=%ld, last_hidden_select_us=%ld, "
+            "candidate_weight_select_us=%ld, lm_head_mm_us=%ld, tp_sync_logits_us=%ld, all_logits_select_us=%ld, "
+            "has_lm_head=0, candidate_lm_head=0, candidate_num=0, logits_is_candidate_tokens=0, logits_rows=0, "
+            "logits_cols=0, need_all_logits=%d, has_context_request=%d, tp_size=%zu",
+            finish_abs_us - post_layers_start_us,
+            finish_abs_us,
+            sp_all_gather_us,
+            final_layernorm_us,
+            lm_output_indexes_cuda_us,
+            last_hidden_select_us,
+            candidate_weight_select_us,
+            lm_head_mm_us,
+            tp_sync_logits_us,
+            all_logits_select_us,
+            need_all_logits,
+            has_context_request,
+            static_cast<size_t>(device_props_.tp_size));
         return {torch::Tensor(), torch::Tensor(), hidden};
     }
+
+    printTorchTensorData(lm_output_indexes, "lm_output_indexes");
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    buffer_holder_.hold_host(lm_output_indexes);
+    auto lm_output_indexes_device = lm_output_indexes.to(torch::kCUDA, /*non_blocking=*/true);
+    lm_output_indexes_cuda_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    torch::Tensor last_hidden;
+    if (has_context_request && !need_all_logits) {
+        last_hidden = torch::index_select(hidden, 0, lm_output_indexes_device.to(torch::kLong));
+    } else {
+        last_hidden = hidden;
+    }
+    last_hidden_select_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+
+    printTorchTensorData(last_hidden, "last_hidden");
+
+    const bool can_use_candidate_lm_head = inputs.candidate_token_ids.defined()
+                                           && inputs.candidate_token_ids.numel() > 0 && !need_all_logits
+                                           && device_props_.tp_size == 1;
+    torch::Tensor lm_head_kernel = lm_head->kernel;
+    if (can_use_candidate_lm_head) {
+        stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        auto candidate_token_ids_host = inputs.candidate_token_ids.to(torch::kCPU).to(torch::kLong).contiguous();
+        buffer_holder_.hold_host(candidate_token_ids_host);
+        auto candidate_token_ids_device = candidate_token_ids_host.to(torch::kCUDA, /*non_blocking=*/true);
+        lm_head_kernel = lm_head->kernel.index_select(0, candidate_token_ids_device);
+        output_candidate_token_ids = candidate_token_ids_host;
+        candidate_lm_head = true;
+        candidate_weight_select_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+    }
+
+    stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    auto logits = torch::mm(last_hidden.to(lm_head_kernel.dtype()), lm_head_kernel.t()).to(torch::kFloat32);
+    lm_head_mm_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+    printTorchTensorData(logits, "logits");
+
+    if (device_props_.tp_size > 1) {
+        stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        logits = tpSyncEmbeddingOrLogits(logits);
+        tp_sync_logits_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+    }
+    if (check_nan_) {
+        RTP_LLM_CHECK_WITH_INFO(!torch::isnan(last_hidden).any().item<bool>(), "NAN detected in last_hidden");
+        RTP_LLM_CHECK_WITH_INFO(!torch::isnan(logits).any().item<bool>(), "NAN detected in logits");
+    }
+    torch::Tensor softmax_result_t;
+    if (need_all_logits) {
+        stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        auto last_logits = torch::index_select(logits, 0, lm_output_indexes_device.to(torch::kLong));
+        all_logits_select_us = autil::TimeUtility::currentTimeInMicroSeconds() - stage_start_us;
+        const int64_t finish_abs_us = autil::TimeUtility::currentTimeInMicroSeconds();
+        RTP_LLM_LOG_INFO(
+            "[PERF] model_forward_post_layers_detail: total_us=%ld, finish_abs_us=%ld, sp_all_gather_us=%ld, "
+            "final_layernorm_us=%ld, lm_output_indexes_cuda_us=%ld, last_hidden_select_us=%ld, "
+            "candidate_weight_select_us=%ld, lm_head_mm_us=%ld, tp_sync_logits_us=%ld, all_logits_select_us=%ld, "
+            "has_lm_head=1, candidate_lm_head=0, candidate_num=0, logits_is_candidate_tokens=0, logits_rows=%ld, "
+            "logits_cols=%ld, need_all_logits=%d, has_context_request=%d, tp_size=%zu",
+            finish_abs_us - post_layers_start_us,
+            finish_abs_us,
+            sp_all_gather_us,
+            final_layernorm_us,
+            lm_output_indexes_cuda_us,
+            last_hidden_select_us,
+            candidate_weight_select_us,
+            lm_head_mm_us,
+            tp_sync_logits_us,
+            all_logits_select_us,
+            logits.size(0),
+            logits.size(1),
+            need_all_logits,
+            has_context_request,
+            static_cast<size_t>(device_props_.tp_size));
+        return {last_logits, last_hidden, hidden, logits, softmax_result_t};
+    }
+
+    if (merged_eagle3_hidden.defined()) {
+        hidden = merged_eagle3_hidden;
+    }
+    const int64_t finish_abs_us = autil::TimeUtility::currentTimeInMicroSeconds();
+    RTP_LLM_LOG_INFO(
+        "[PERF] model_forward_post_layers_detail: total_us=%ld, finish_abs_us=%ld, sp_all_gather_us=%ld, "
+        "final_layernorm_us=%ld, lm_output_indexes_cuda_us=%ld, last_hidden_select_us=%ld, "
+        "candidate_weight_select_us=%ld, lm_head_mm_us=%ld, tp_sync_logits_us=%ld, all_logits_select_us=%ld, "
+        "has_lm_head=1, candidate_lm_head=%d, candidate_num=%ld, logits_is_candidate_tokens=%d, logits_rows=%ld, "
+        "logits_cols=%ld, need_all_logits=%d, has_context_request=%d, tp_size=%zu",
+        finish_abs_us - post_layers_start_us,
+        finish_abs_us,
+        sp_all_gather_us,
+        final_layernorm_us,
+        lm_output_indexes_cuda_us,
+        last_hidden_select_us,
+        candidate_weight_select_us,
+        lm_head_mm_us,
+        tp_sync_logits_us,
+        all_logits_select_us,
+        candidate_lm_head,
+        output_candidate_token_ids.defined() ? output_candidate_token_ids.numel() : 0,
+        candidate_lm_head,
+        logits.size(0),
+        logits.size(1),
+        need_all_logits,
+        has_context_request,
+        static_cast<size_t>(device_props_.tp_size));
+    return {logits,
+            last_hidden,
+            hidden,
+            torch::Tensor(),
+            softmax_result_t,
+            candidate_lm_head,
+            output_candidate_token_ids};
 }
 
 MicroBatchPlan PyWrappedModel::planMicroBatches(const GptModelInputs& inputs) {

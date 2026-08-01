@@ -78,26 +78,35 @@ absl::StatusOr<SamplerInputs> NormalSamplerInputGatherer::gather(const StreamGro
 
     auto vocab_size           = (size_t)model_output.logits.size(1);
     sampler_inputs.vocab_size = vocab_size;
+    sampler_inputs.logits_is_candidate_tokens = model_output.logits_is_candidate_tokens;
 
-    std::vector<int> shared_candidate_token_ids;
-    if (collectSharedCandidateTokenIds(all_streams, shared_candidate_token_ids)) {
-        bool candidate_tokens_valid = std::all_of(shared_candidate_token_ids.begin(),
-                                                  shared_candidate_token_ids.end(),
-                                                  [vocab_size](int token_id) {
-                                                      return token_id >= 0 && static_cast<size_t>(token_id) < vocab_size;
-                                                  });
-        if (candidate_tokens_valid) {
-            std::vector<int64_t> candidate_token_ids(shared_candidate_token_ids.begin(),
-                                                     shared_candidate_token_ids.end());
-            sampler_inputs.candidate_token_ids = torch::tensor(candidate_token_ids, torch::kLong);
-            sampler_inputs.candidate_tokens_same_batch = true;
-            RTP_LLM_LOG_INFO(
-                "[PERF] sampler_candidate_tokens: candidate_same_batch=1, candidate_num=%zu, source=first_stream",
-                candidate_token_ids.size());
-        } else {
-            RTP_LLM_LOG_WARNING(
-                "skip candidate token sampling because select_tokens_id contains invalid token id, vocab_size=%zu",
-                vocab_size);
+    if (model_output.logits_is_candidate_tokens && model_output.candidate_token_ids.defined()) {
+        sampler_inputs.candidate_token_ids = model_output.candidate_token_ids;
+        sampler_inputs.candidate_tokens_same_batch = true;
+        RTP_LLM_LOG_INFO(
+            "[PERF] sampler_candidate_tokens: candidate_same_batch=1, candidate_num=%ld, source=model_logits",
+            model_output.candidate_token_ids.numel());
+    } else {
+        std::vector<int> shared_candidate_token_ids;
+        if (collectSharedCandidateTokenIds(all_streams, shared_candidate_token_ids)) {
+            bool candidate_tokens_valid = std::all_of(shared_candidate_token_ids.begin(),
+                                                      shared_candidate_token_ids.end(),
+                                                      [vocab_size](int token_id) {
+                                                          return token_id >= 0 && static_cast<size_t>(token_id) < vocab_size;
+                                                      });
+            if (candidate_tokens_valid) {
+                std::vector<int64_t> candidate_token_ids(shared_candidate_token_ids.begin(),
+                                                         shared_candidate_token_ids.end());
+                sampler_inputs.candidate_token_ids = torch::tensor(candidate_token_ids, torch::kLong);
+                sampler_inputs.candidate_tokens_same_batch = true;
+                RTP_LLM_LOG_INFO(
+                    "[PERF] sampler_candidate_tokens: candidate_same_batch=1, candidate_num=%zu, source=first_stream",
+                    candidate_token_ids.size());
+            } else {
+                RTP_LLM_LOG_WARNING(
+                    "skip candidate token sampling because select_tokens_id contains invalid token id, vocab_size=%zu",
+                    vocab_size);
+            }
         }
     }
 

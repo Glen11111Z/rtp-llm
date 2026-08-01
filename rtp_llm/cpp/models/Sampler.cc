@@ -203,8 +203,14 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         torch::Tensor new_token_ids;
         if (candidate_greedy_fast_path) {
             int64_t candidate_stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
-            auto candidate_token_ids = candidateTokenIdsOnLogitsDevice(inputs.candidate_token_ids, inputs.logits.device());
-            auto candidate_logits = inputs.logits.index_select(1, candidate_token_ids);
+            torch::Tensor candidate_logits;
+            if (inputs.logits_is_candidate_tokens) {
+                candidate_logits = inputs.logits;
+            } else {
+                auto candidate_token_ids =
+                    candidateTokenIdsOnLogitsDevice(inputs.candidate_token_ids, inputs.logits.device());
+                candidate_logits = inputs.logits.index_select(1, candidate_token_ids);
+            }
             candidate_gather_us = autil::TimeUtility::currentTimeInMicroSeconds() - candidate_stage_start_us;
 
             candidate_stage_start_us = autil::TimeUtility::currentTimeInMicroSeconds();
@@ -250,8 +256,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
             "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d, "
             "simple_greedy_fast_path=%d, candidate_sampling=%d, candidate_num=%zu, candidate_same_batch=%d, "
-            "candidate_gather_us=%ld, candidate_logits_cpu_us=%ld, candidate_cpu_select_us=%ld, "
-            "candidate_argmax_us=%ld, candidate_map_us=%ld",
+            "logits_is_candidate_tokens=%d, candidate_gather_us=%ld, candidate_logits_cpu_us=%ld, "
+            "candidate_cpu_select_us=%ld, candidate_argmax_us=%ld, candidate_map_us=%ld",
             total_us,
             preprocess_logits_us,
             prepare_output_us,
@@ -283,6 +289,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
             candidate_greedy_fast_path,
             candidate_num,
             inputs.candidate_tokens_same_batch,
+            inputs.logits_is_candidate_tokens,
             candidate_gather_us,
             candidate_logits_cpu_us,
             candidate_cpu_select_us,
@@ -520,8 +527,8 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         "has_num_beams=%d, variable_num_beams=%d, return_original_all_probs=%d, all_probs_defined=%d, "
         "do_sample_defined=%d, top_k_defined=%d, top_p_defined=%d, temperature_defined=%d, "
         "simple_greedy_fast_path=%d, candidate_sampling=%d, candidate_num=%zu, candidate_same_batch=%d, "
-        "candidate_gather_us=%ld, candidate_logits_cpu_us=%ld, candidate_cpu_select_us=%ld, "
-        "candidate_argmax_us=%ld, candidate_map_us=%ld",
+        "logits_is_candidate_tokens=%d, candidate_gather_us=%ld, candidate_logits_cpu_us=%ld, "
+        "candidate_cpu_select_us=%ld, candidate_argmax_us=%ld, candidate_map_us=%ld",
         total_us,
         preprocess_logits_us,
         prepare_output_us,
@@ -553,6 +560,7 @@ SamplerOutput Sampler::forward(const SamplerInputs& inputs) {
         false,
         has_candidate_token_ids ? inputs.candidate_token_ids.numel() : 0,
         inputs.candidate_tokens_same_batch,
+        inputs.logits_is_candidate_tokens,
         candidate_gather_us,
         candidate_logits_cpu_us,
         candidate_cpu_select_us,

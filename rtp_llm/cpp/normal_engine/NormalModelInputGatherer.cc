@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+#include <vector>
 #include "torch/all.h"
 #include "rtp_llm/cpp/cache/Types.h"
 #include "rtp_llm/cpp/normal_engine/NormalModelInputGatherer.h"
@@ -189,6 +190,51 @@ void addCacheUpdateCopy(GatherModelInputContext& ctx, const std::vector<BlockIdP
     size_t update_copy_num = update_mapping.size();
     std::memcpy(ctx.kv_cache_update_mapping, update_mapping.data(), update_copy_num * sizeof(BlockIdPair));
     ctx.kv_cache_update_mapping += update_copy_num;
+}
+
+bool streamSupportsCandidateModelLogits(const GenerateStreamPtr& stream) {
+    if (!stream) {
+        return false;
+    }
+    const auto config = stream->generateConfig();
+    if (config == nullptr || config->select_tokens_id.empty()) {
+        return false;
+    }
+    if (stream->returnLogits() || stream->calculateSoftmaxProbs() || stream->calculateLoss()
+        || stream->returnPromptLogits() || stream->returnCumLogProbs() || stream->currentNumBeams() > 1
+        || stream->nextNumBeams() > 1 || stream->needTilingForSampling()) {
+        return false;
+    }
+    const int no_repeat_ngram_size = config->no_repeat_ngram_size.value_or(0);
+    return config->top_k == 1 && config->repetition_penalty == 1.0f && config->presence_penalty == 0.0f
+           && config->frequency_penalty == 0.0f && no_repeat_ngram_size == 0
+           && config->return_all_probs == ReturnAllProbsMode::NONE && config->stop_words_list.empty()
+           && config->banned_combo_token_ids.empty();
+}
+
+void setSharedCandidateTokenIdsForModel(GptModelInputs& model_input, const StreamGroups& stream_groups, size_t vocab_size) {
+    auto all_streams = stream_groups.allStreams();
+    if (all_streams.empty() || !std::all_of(all_streams.begin(), all_streams.end(), streamSupportsCandidateModelLogits)) {
+        return;
+    }
+
+    const auto& shared_candidate_token_ids = all_streams.front()->generateConfig()->select_tokens_id;
+    bool candidate_tokens_valid = std::all_of(shared_candidate_token_ids.begin(),
+                                              shared_candidate_token_ids.end(),
+                                              [vocab_size](int token_id) {
+                                                  return token_id >= 0 && static_cast<size_t>(token_id) < vocab_size;
+                                              });
+    if (!candidate_tokens_valid) {
+        RTP_LLM_LOG_WARNING(
+            "skip model candidate logits because select_tokens_id contains invalid token id, vocab_size=%zu",
+            vocab_size);
+        return;
+    }
+
+    std::vector<int64_t> candidate_token_ids(shared_candidate_token_ids.begin(), shared_candidate_token_ids.end());
+    model_input.candidate_token_ids = torch::tensor(candidate_token_ids, torch::kLong);
+    RTP_LLM_LOG_INFO("[PERF] model_candidate_tokens: candidate_same_batch=1, candidate_num=%zu, source=first_stream",
+                     candidate_token_ids.size());
 }
 
 }  // anonymous namespace
@@ -422,6 +468,7 @@ absl::StatusOr<GptModelInputs> NormalModelInputGatherer::gather(const StreamGrou
     initializeKvCacheMetadata(model_input);
     RETURN_IF_STATUS_ERROR(processDecodeStreams(model_input, stream_groups));
     RETURN_IF_STATUS_ERROR(processContextStreams(model_input, stream_groups));
+    setSharedCandidateTokenIdsForModel(model_input, stream_groups, config_.vocab_size);
     return model_input;
 }
 

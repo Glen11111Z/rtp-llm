@@ -29,12 +29,14 @@ public:
                      << ", input_lengths: " << tensorDebugStringWithData<int32_t>(input_lengths)
                      << ", sequence_lengths: " << tensorDebugStringWithData<int32_t>(sequence_lengths)
                      << ", cum_log_probs: " << tensorDebugStringWithData<float>(cum_log_probs)
-                     << ", candidate_token_ids: " << tensorDebugStringWithData<int64_t>(candidate_token_ids) << "}";
+                     << ", candidate_token_ids: " << tensorDebugStringWithData<int64_t>(candidate_token_ids)
+                     << ", logits_is_candidate_tokens: " << logits_is_candidate_tokens << "}";
         return debug_string.str();
     }
 
 public:
-    torch::Tensor         logits;         // shape: [batch_size, vocab_size]
+    torch::Tensor         logits;  // shape: [batch_size, vocab_size] or [batch_size, candidate_num]
+    bool                  logits_is_candidate_tokens = false;
     mutable torch::Tensor token_ids;      // shape: [batch_size, max_length]
     torch::Tensor         input_lengths;  // shape: [batch_size]
     // shape: [decoder_batch_size]
