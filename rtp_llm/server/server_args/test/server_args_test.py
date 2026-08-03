@@ -30,6 +30,7 @@ class ServerArgsSetTest(TestCase):
         os.environ["WORLD_SIZE"] = "8"
         os.environ["CONCURRENCY_LIMIT"] = "64"
         os.environ["MAX_CONTEXT_BATCH_SIZE"] = "32"
+        os.environ["MAX_PREFILL_BATCH_SIZE"] = "20"
         os.environ["WARM_UP"] = "1"
         os.environ["MAX_SEQ_LEN"] = "4096"
 
@@ -59,6 +60,10 @@ class ServerArgsSetTest(TestCase):
             py_env_configs.runtime_config.fifo_scheduler_config.max_context_batch_size,
             32,
         )
+        self.assertEqual(
+            py_env_configs.runtime_config.fifo_scheduler_config.max_prefill_batch_size,
+            20,
+        )
 
         # Verify runtime_config (warm_up is now in RuntimeConfig)
         self.assertEqual(py_env_configs.runtime_config.warm_up, True)  # bool in C++
@@ -85,6 +90,8 @@ class ServerArgsSetTest(TestCase):
             "128",
             "--max_context_batch_size",
             "64",
+            "--max_prefill_batch_size",
+            "16",
             "--warm_up",
             "0",
             "--cache_store_rdma_io_thread_count",
@@ -120,6 +127,10 @@ class ServerArgsSetTest(TestCase):
         self.assertEqual(
             py_env_configs.runtime_config.fifo_scheduler_config.max_context_batch_size,
             64,
+        )
+        self.assertEqual(
+            py_env_configs.runtime_config.fifo_scheduler_config.max_prefill_batch_size,
+            16,
         )
 
         # Verify runtime_config (warm_up is now in RuntimeConfig)
@@ -213,6 +224,10 @@ class ServerArgsSetTest(TestCase):
         self.assertEqual(
             py_env_configs.runtime_config.fifo_scheduler_config.max_context_batch_size,
             32,
+        )
+        self.assertEqual(
+            py_env_configs.runtime_config.fifo_scheduler_config.max_prefill_batch_size,
+            20,
         )
 
     def test_batch_decode_scheduler_config(self):

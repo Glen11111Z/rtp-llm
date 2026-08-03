@@ -22,6 +22,9 @@ FIFOSchedulerBase::FIFOSchedulerBase(const RuntimeConfig&                   runt
     cache_manager_(cache_manager),
     max_seq_len_(model_config.max_seq_len),
     max_batch_tokens_size_(runtime_config.fifo_scheduler_config.max_batch_tokens_size),
+    max_prefill_batch_size_(runtime_config.fifo_scheduler_config.max_prefill_batch_size > 0 ?
+                                static_cast<size_t>(runtime_config.fifo_scheduler_config.max_prefill_batch_size) :
+                                20),
     max_generate_batch_size_(runtime_config.max_generate_batch_size),
     need_fill_fake_stream_(parallelism_config.dp_size > 1 && parallelism_config.tp_rank == 0),
     metrics_reporter_(metrics_reporter) {}

@@ -16,6 +16,14 @@ def init_fifo_scheduler_group_args(parser, fifo_scheduler_config):
         help="（设备参数）为设备参数设置的最大 context batch size，影响默认调度器的凑批决策。",
     )
     fifo_scheduler_group.add_argument(
+        "--max_prefill_batch_size",
+        env_name="MAX_PREFILL_BATCH_SIZE",
+        bind_to=[(fifo_scheduler_config, "max_prefill_batch_size")],
+        type=int,
+        default=20,
+        help="每轮调度最多准入的 prefill/context stream 数量硬上限，默认 20。",
+    )
+    fifo_scheduler_group.add_argument(
         "--max_batch_tokens_size",
         env_name="MAX_BATCH_TOKENS_SIZE",
         bind_to=[(fifo_scheduler_config, "max_batch_tokens_size")],

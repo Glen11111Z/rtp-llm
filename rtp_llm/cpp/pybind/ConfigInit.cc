@@ -1153,6 +1153,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
     py::class_<FIFOSchedulerConfig>(m, "FIFOSchedulerConfig")
         .def(py::init<>())
         .def_readwrite("max_context_batch_size", &FIFOSchedulerConfig::max_context_batch_size)
+        .def_readwrite("max_prefill_batch_size", &FIFOSchedulerConfig::max_prefill_batch_size)
         .def_readwrite("max_batch_tokens_size", &FIFOSchedulerConfig::max_batch_tokens_size)
         .def_readwrite("pdfusion_scheduler_mode", &FIFOSchedulerConfig::pdfusion_scheduler_mode)
         .def_readwrite("decode_prefill_ratio", &FIFOSchedulerConfig::decode_prefill_ratio)
@@ -1162,18 +1163,22 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 return py::make_tuple(self.max_context_batch_size,
                                       self.max_batch_tokens_size,
                                       self.pdfusion_scheduler_mode,
-                                      self.decode_prefill_ratio);
+                                      self.decode_prefill_ratio,
+                                      self.max_prefill_batch_size);
             },
             [](py::tuple t) {
-                if (t.size() != 2 && t.size() != 4)
+                if (t.size() != 2 && t.size() != 4 && t.size() != 5)
                     throw std::runtime_error("Invalid state!");
                 FIFOSchedulerConfig c;
                 try {
                     c.max_context_batch_size = t[0].cast<int64_t>();
                     c.max_batch_tokens_size  = t[1].cast<int64_t>();
-                    if (t.size() == 4) {
+                    if (t.size() >= 4) {
                         c.pdfusion_scheduler_mode = t[2].cast<std::string>();
                         c.decode_prefill_ratio    = t[3].cast<std::string>();
+                    }
+                    if (t.size() == 5) {
+                        c.max_prefill_batch_size = t[4].cast<int64_t>();
                     }
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("FIFOSchedulerConfig unpickle error: ") + e.what());

@@ -913,6 +913,7 @@ GptModelOutputs PyWrappedModel::forwardPostLayers(torch::Tensor         hidden,
             hidden,
             torch::Tensor(),
             softmax_result_t,
+            {},
             candidate_lm_head,
             output_candidate_token_ids};
 }

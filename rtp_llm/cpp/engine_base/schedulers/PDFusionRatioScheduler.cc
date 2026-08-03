@@ -62,8 +62,9 @@ PDFusionRatioScheduler::PDFusionRatioScheduler(const RuntimeConfig&             
     decode_prefill_step_(parseDecodePrefillRatio(runtime_config.fifo_scheduler_config.decode_prefill_ratio)),
     decode_since_prefill_(0),
     prefill_since_decode_(0) {
-    RTP_LLM_LOG_INFO("max_generate_batch_size is [%zu], max_batch_tokens_size is [%zu]",
+    RTP_LLM_LOG_INFO("max_generate_batch_size is [%zu], max_prefill_batch_size is [%zu], max_batch_tokens_size is [%zu]",
                      max_generate_batch_size_,
+                     max_prefill_batch_size_,
                      max_batch_tokens_size_);
     RTP_LLM_LOG_INFO("pdfusion ratio scheduler role_type [%d], decode_prefill_ratio [%s], parsed step [%ld]",
                      static_cast<int>(pd_sep_config_.role_type),
@@ -79,6 +80,9 @@ PDFusionRatioScheduler::~PDFusionRatioScheduler() {
 bool PDFusionRatioScheduler::evaluateRunningMemory(const list<GenerateStreamPtr>& streams,
                                                    const GenerateStreamPtr&       new_stream) const {
     RTP_LLM_PROFILE_FUNCTION();
+    if (streams.size() + 1 > max_prefill_batch_size_) {
+        return false;
+    }
     const auto in_flight_streams =
         loading_cache_streams_.size() + running_streams_.size() + pending_decode_streams_.size() + streams.size();
     if (in_flight_streams + 1 > max_generate_batch_size_) {

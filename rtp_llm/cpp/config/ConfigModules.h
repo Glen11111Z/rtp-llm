@@ -343,6 +343,7 @@ PDFusionSchedulerMode parsePDFusionSchedulerMode(const std::string& mode);
 
 struct FIFOSchedulerConfig {
     int64_t max_context_batch_size = 1;
+    int64_t max_prefill_batch_size = 20;
     int64_t max_batch_tokens_size  = 0;
     // PDFUSION scheduler mode. Supported values:
     //   ""      -> default FIFO/decode-first scheduler

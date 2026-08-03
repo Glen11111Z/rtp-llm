@@ -23,8 +23,9 @@ FIFOScheduler::FIFOScheduler(const RuntimeConfig&                   runtime_conf
                       model_specific_config,
                       cache_manager,
                       metrics_reporter) {
-    RTP_LLM_LOG_INFO("max_generate_batch_size is [%zu], max_batch_tokens_size is [%zu]",
+    RTP_LLM_LOG_INFO("max_generate_batch_size is [%zu], max_prefill_batch_size is [%zu], max_batch_tokens_size is [%zu]",
                      max_generate_batch_size_,
+                     max_prefill_batch_size_,
                      max_batch_tokens_size_);
 }
 
@@ -43,6 +44,9 @@ bool FIFOScheduler::evaluateRunningMemory(const list<GenerateStreamPtr>& streams
     }
     // prefill and decode not mixed together
     if (!running_streams_.empty()) {
+        return false;
+    }
+    if (streams.size() + 1 > max_prefill_batch_size_) {
         return false;
     }
     if (running_streams_.size() + streams.size() + 1 > max_generate_batch_size_) {

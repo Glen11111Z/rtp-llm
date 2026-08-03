@@ -78,6 +78,7 @@ protected:
     std::atomic<int64_t>            last_schedule_time_      = autil::TimeUtility::currentTimeInMilliSeconds();
     size_t                          max_seq_len_             = 0;
     size_t                          max_batch_tokens_size_   = 0;
+    size_t                          max_prefill_batch_size_  = 20;
     size_t                          max_generate_batch_size_ = 1;
     bool                            need_fill_fake_stream_   = false;
     std::atomic<bool>               stop_                    = false;
