@@ -133,6 +133,7 @@ void StreamCacheResource::releaseResource() {
 int StreamCacheResource::tryReleaseKVBlock(size_t nums) {
     RTP_LLM_PROFILE_FUNCTION();
     RTP_LLM_LOG_DEBUG("stream [%s] try release [%lu] blocks", stream_->streamLogTag().c_str(), nums);
+    releaseBatchPrivateBlocks();
 
     if (fake_inited_) {
         int max_blocks_num = curBlocksNum();
@@ -216,6 +217,7 @@ absl::Status StreamCacheResource::initKVBlock() {
     malloc_info.batch_kv_cache_resource = batch_kv_cache_resource_;
     malloc_info.complete_token_ids      = stream_->completeTokenIdsPtr();
     malloc_info.request_id              = stream_->streamId();
+    malloc_info.epoch                   = resource_context_.enable_reuse_cache_in_batch ? stream_->batchEpoch() : 0;
     malloc_info.verbose                 = malloc_failed_times_ >= 10 ? malloc_failed_times_ % 100 == 0 : true;
 
     const bool disable_first_malloc_reuse =
@@ -425,10 +427,13 @@ absl::Status StreamCacheResource::incrKVBlock(int seq_len_override) {
         return absl::InternalError("fake inited not allow to incr block");
     }
 
+    const int64_t batch_epoch = resource_context_.enable_reuse_cache_in_batch ? stream_->batchEpoch() : 0;
+
     MallocInfo malloc_info;
     malloc_info.batch_kv_cache_resource      = batch_kv_cache_resource_;
     malloc_info.complete_token_ids           = stream_->completeTokenIdsPtr();
     malloc_info.request_id                   = stream_->streamId();
+    malloc_info.epoch                        = batch_epoch;
     malloc_info.verbose                      = malloc_failed_times_ >= 10 ? malloc_failed_times_ % 100 == 0 : true;
     malloc_info.reuse_cache                  = reuseCache();
     malloc_info.enable_cache_lookup          = enableCacheLookup();
@@ -484,6 +489,51 @@ bool StreamCacheResource::loadCacheDone() {
         }
     }
     return true;
+}
+
+void StreamCacheResource::insertBatchPrivateBlocks() {
+    if (!resource_context_.cache_manager || !resource_context_.enable_reuse_cache_in_batch || !reuseCache()) {
+        return;
+    }
+    if (batch_kv_cache_resource_->curBlocksNum() == 0) {
+        return;
+    }
+    // epoch==0 means the scheduler has not admitted this stream yet. Publishing
+    // at epoch 0 would promote batch-local data into the global prefix cache.
+    const int64_t batch_epoch = stream_->batchEpoch();
+    if (batch_epoch <= 0) {
+        RTP_LLM_LOG_WARNING("insertBatchPrivateBlocks without batch epoch, stream=%ld; skipping",
+                            stream_->streamId());
+        return;
+    }
+    const size_t full_blocks_num =
+        static_cast<size_t>(stream_->completeTokenIdsPtr()->seqLength()) / static_cast<size_t>(seqSizePerBlock());
+    const size_t n_blocks = std::min(batch_kv_cache_resource_->cacheKeys(0).size(), full_blocks_num);
+    if (n_blocks == 0) {
+        return;
+    }
+    // Only keys and per-group block rows are read by the insert path, so copy the
+    // prefix instead of rebuilding the full layer view on the scheduler hot path.
+    InsertInfo insert_info{batch_kv_cache_resource_->prefixCopy(n_blocks), stream_->completeTokenIdsPtr(), false};
+    insert_info.epoch           = batch_epoch;
+    insert_info.owner_stream_id = stream_->streamId();
+    size_t resident_prefix_length = 0;
+    resource_context_.cache_manager->insertIntoCache(insert_info, resident_prefix_length);
+    batch_private_registered_ = true;
+}
+
+void StreamCacheResource::releaseBatchPrivateBlocks() {
+    if (!batch_private_registered_) {
+        return;
+    }
+    batch_private_registered_ = false;
+    const int64_t batch_epoch = stream_->batchEpoch();
+    if (batch_epoch <= 0 || !resource_context_.cache_manager) {
+        return;
+    }
+    // Same-epoch siblings have already matched by the time this stream releases,
+    // and each holds its own request references, so the entries can be dropped.
+    resource_context_.cache_manager->dropBatchPrivate(batch_epoch, stream_->streamId());
 }
 
 // TODO, delete it soon

@@ -113,6 +113,12 @@ public:
     void reportLoadJoin(size_t dependency_count) const;
     void reportLoadJoinWait(int64_t join_wait_latency_us) const;
 
+    // Batch-private reuse is tracked separately from global cache hits.
+    void reportBatchPrivateRegistered(size_t blocks) const;
+    void reportBatchPrivateMatched(size_t blocks, int64_t match_cost_us) const;
+    void reportBatchPrivateReclaimed(size_t blocks) const;
+    void reportBatchPrivateActiveEpochs(size_t epochs) const;
+
     int64_t reportTransferStarted(CacheTransferOperation operation, Tier source_tier, Tier target_tier);
     // Report once after all batches/ranks of a logical copy have completed.
     void maybeReportCopyError(Tier source_tier, Tier target_tier, const TransferResult& result) const;

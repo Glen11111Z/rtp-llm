@@ -367,6 +367,7 @@ std::unordered_set<GenerateStream*> FIFOSchedulerBase::evaluateWaitingStreams(li
         set_scheduling_type(running_streams_);
     }
     set_scheduling_type(new_streams_);
+    const int64_t batch_epoch = nextBatchEpoch();
     for (auto it = waiting_streams.begin(); it != waiting_streams.end();) {
         auto& stream = *it;
 
@@ -387,6 +388,9 @@ std::unordered_set<GenerateStream*> FIFOSchedulerBase::evaluateWaitingStreams(li
         // Capacity checks must still run for the current scheduling round.
         if (!stream->hasError() && evaluateRunningMemory(admitted_streams, stream)) {
             if (!stream->hasEvent(StreamEvents::CanRun)) {
+                // Only first-time admissions join a batch epoch; a stream that
+                // already carries CanRun keeps the identity it was admitted with.
+                stream->setBatchEpoch(batch_epoch);
                 stream->reportEvent(StreamEvents::CanRun);
             }
             admitted_streams.push_back(stream);

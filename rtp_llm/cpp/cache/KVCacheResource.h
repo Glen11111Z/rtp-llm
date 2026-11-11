@@ -187,6 +187,11 @@ public:
 
     void swapBlocks(std::string_view group_tag, size_t rhs, size_t lhs);
 
+    // Copy only the first n_blocks cache keys and per-group block rows. Layer
+    // views and dependencies are intentionally not materialized: insertIntoCache
+    // reads cacheKeys() and blocks(tag) only.
+    KVCacheResource prefixCopy(size_t n_blocks) const;
+
     std::string debugString() const;
 
 private:

@@ -474,6 +474,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
     py::class_<KVCacheConfig>(m, "KVCacheConfig")
         .def(py::init<>())
         .def_readwrite("reuse_cache", &KVCacheConfig::reuse_cache)
+        .def_readwrite("enable_reuse_cache_in_batch", &KVCacheConfig::enable_reuse_cache_in_batch)
         .def_readwrite("enable_remote_cache", &KVCacheConfig::enable_remote_cache)
         .def_readwrite("enable_device_cache", &KVCacheConfig::enable_device_cache)
         .def_readwrite("enable_crc", &KVCacheConfig::enable_crc)
@@ -647,10 +648,19 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.kv_cache_event_host_ip_port,
                                       self.enable_crc,
                                       self.linear_pool_blocks,
-                                      self.swa_pool_blocks);
+                                      self.swa_pool_blocks,
+                                      self.enable_reuse_cache_in_batch);
             },
             [](py::tuple t) {
                 const py::tuple tail_state = t;
+                bool has_batch_reuse_field = false;
+                bool batch_reuse_value     = false;
+                if (t.size() == 73 && py::isinstance<py::int_>(t[1]) && t[1].cast<int>() == 10) {
+                    has_batch_reuse_field = true;
+                    batch_reuse_value     = t[72].cast<bool>();
+                    t                     = t[py::slice(0, 72, 1)].cast<py::tuple>();
+                    t[1]                  = py::int_(9);
+                }
                 const bool has_tail_fields = t.size() == 72 && py::isinstance<py::int_>(t[1]) && t[1].cast<int>() == 9;
                 if (has_tail_fields) {
                     t    = t[py::slice(0, 70, 1)].cast<py::tuple>();
@@ -782,6 +792,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 }
                 if (has_crc_field) {
                     c.enable_crc = crc_state[69].cast<bool>();
+                }
+                if (has_batch_reuse_field) {
+                    c.enable_reuse_cache_in_batch = batch_reuse_value;
                 }
                 return c;
             }));

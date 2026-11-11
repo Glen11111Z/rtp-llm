@@ -23,6 +23,9 @@ struct MultiNodeResource {
     size_t                                                       group_set_id{0};
     Tier                                                         tier{Tier::DEVICE};
     std::vector<std::pair<TreeNode*, std::vector<BlockIdxType>>> node_blocks;
+    // Canonical path position of node_blocks.front(). Non-zero when the matched
+    // segment is a suffix (batch-private overlay) rather than the path head.
+    size_t start_index{0};
 };
 
 class MatchValidator {

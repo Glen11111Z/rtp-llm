@@ -260,6 +260,13 @@ struct KVCacheConfig {
     int         kvcm_get_broadcast_timeout           = 15000;
     int         kvcm_put_broadcast_timeout           = 15000;
     std::string kvcm_client_config                   = "";
+
+    // Disabled by default. Exposes batch-local full-attention KV blocks to
+    // same-batch siblings before the owner stream enters RUNNING, relying on
+    // per-layer KV store happening before sibling attention read in one
+    // forward pass. Hybrid/linear-attention state cache is not supported.
+    bool enable_reuse_cache_in_batch = false;
+
     void        insertMultiTaskPromptTokens(std::string task_id, std::vector<int64_t> tokens_id);
     std::string to_string() const;
 };

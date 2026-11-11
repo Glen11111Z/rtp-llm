@@ -51,6 +51,14 @@ def init_kv_cache_group_args(parser, kv_cache_config):
         help="控制是否激活KV Cache的重用机制, 默认开启显存重用, 其他cache重用需手动开启。设置为 True 启用 , False 关闭",
     )
     kv_cache_group.add_argument(
+        "--enable_reuse_cache_in_batch",
+        env_name="ENABLE_REUSE_CACHE_IN_BATCH",
+        bind_to=(kv_cache_config, "enable_reuse_cache_in_batch"),
+        type=str2bool,
+        default=False,
+        help="控制是否启用同一 batch 内请求间的 KV Cache 复用（基于 batch epoch 隔离）。默认关闭；仅支持 Full Attention 拓扑，批内复用依赖同一 forward 内写先于读。",
+    )
+    kv_cache_group.add_argument(
         "--enable_device_cache",
         env_name="ENABLE_DEVICE_CACHE",
         bind_to=(kv_cache_config, "enable_device_cache"),

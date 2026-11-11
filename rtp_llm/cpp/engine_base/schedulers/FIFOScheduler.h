@@ -20,8 +20,9 @@ public:
                            const ParallelismConfig&               parallelism_config,
                            const ModelSpecificConfig&             model_specific_config,
                            const std::shared_ptr<KVCacheManager>& cache_manager,
-                           const kmonitor::MetricsReporterPtr     metrics_reporter = nullptr,
-                           const int                              max_score_len    = 1);
+                           const kmonitor::MetricsReporterPtr     metrics_reporter      = nullptr,
+                           const int                              max_score_len         = 1,
+                           const bool                             enable_reuse_in_batch = false);
 
     ~FIFOScheduler() override;
 
@@ -67,6 +68,9 @@ private:
     const char* schedulerName() const override {
         return "FIFOScheduler";
     }
+    // Monotonic batch identity for intra-batch KV cache reuse. Streams admitted
+    // in the same scheduling round share one epoch; 0 means the feature is off.
+    int64_t nextBatchEpoch() override;
     bool evaluateRunningMemory(const std::list<GenerateStreamPtr>& streams,
                                const GenerateStreamPtr&            new_stream) override;
     // Counter-based admission check used by admitWaitingStreams(). evaluateRunningMemory()
@@ -129,6 +133,8 @@ private:
 
     // Consumed (exchanged to 0) from the const fillExtraMetrics() reporting hook.
     mutable std::atomic<int64_t> pending_group_fallback_count_ = 0;
+    std::atomic<int64_t>         batch_epoch_counter_{0};
+    bool                         enable_batch_cache_reuse_     = false;
     AdmissionLane                active_admission_lane_        = AdmissionLane::NONE;
     bool                         prefer_group_next_            = false;
 

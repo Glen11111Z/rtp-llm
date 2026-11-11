@@ -339,6 +339,14 @@ int64_t GenerateStream::streamId() const {
     return generate_input_->request_id;
 }
 
+int64_t GenerateStream::batchEpoch() const {
+    return batch_epoch_;
+}
+
+void GenerateStream::setBatchEpoch(int64_t epoch) {
+    batch_epoch_ = epoch;
+}
+
 std::string GenerateStream::streamLogTag() const {
     const auto& request_info = generate_input_->request_info;
     std::string tag          = std::string("request_id=") + std::to_string(streamId()) + " trace_id=" + traceId();

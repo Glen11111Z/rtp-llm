@@ -9,6 +9,9 @@
 #include "rtp_llm/cpp/utils/AssertUtils.h"
 
 namespace rtp_llm {
+class BatchKVCacheResource;
+using BatchKVCacheResourcePtr = std::shared_ptr<BatchKVCacheResource>;
+
 class BatchKVCacheResource {
 public:
     BatchKVCacheResource() {}
@@ -188,6 +191,17 @@ public:
         return all_blocks;
     }
 
+    // Copy only the first n_blocks of every batch's keys and block rows, leaving
+    // this resource untouched. Used to publish a cacheable prefix snapshot.
+    BatchKVCacheResourcePtr prefixCopy(size_t n_blocks) const {
+        auto out = std::make_shared<BatchKVCacheResource>();
+        out->batch_resource.reserve(batch_resource.size());
+        for (const auto& resource : batch_resource) {
+            out->batch_resource.push_back(resource.prefixCopy(n_blocks));
+        }
+        return out;
+    }
+
     bool hasCacheKeys() const {
         if (batch_resource.empty()) {
             return false;
@@ -237,7 +251,5 @@ private:
     std::vector<KVCacheResource> batch_resource;  // [batch_size]
     bool                         cache_keys_initialized_{false};
 };
-
-using BatchKVCacheResourcePtr = std::shared_ptr<BatchKVCacheResource>;
 
 }  // namespace rtp_llm

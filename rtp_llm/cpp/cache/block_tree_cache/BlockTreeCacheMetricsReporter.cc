@@ -331,6 +331,47 @@ void BlockTreeCacheMetricsReporter::reportLoadJoinWait(int64_t join_wait_latency
     metrics_reporter_->report<RtpLLMCacheReuseMetrics, RtpLLMCacheReuseMetricsCollector>(nullptr, &collector);
 }
 
+void BlockTreeCacheMetricsReporter::reportBatchPrivateRegistered(size_t blocks) const {
+    if (metrics_reporter_ == nullptr) {
+        return;
+    }
+    RtpLLMCacheReuseMetricsCollector collector;
+    collector.batch_private_blocks            = static_cast<int64_t>(blocks);
+    collector.report_batch_private_registered = true;
+    metrics_reporter_->report<RtpLLMCacheReuseMetrics, RtpLLMCacheReuseMetricsCollector>(nullptr, &collector);
+}
+
+void BlockTreeCacheMetricsReporter::reportBatchPrivateMatched(size_t blocks, int64_t match_cost_us) const {
+    if (metrics_reporter_ == nullptr) {
+        return;
+    }
+    RtpLLMCacheReuseMetricsCollector collector;
+    collector.batch_private_blocks         = static_cast<int64_t>(blocks);
+    collector.batch_private_match_cost_us  = match_cost_us;
+    collector.report_batch_private_matched = true;
+    metrics_reporter_->report<RtpLLMCacheReuseMetrics, RtpLLMCacheReuseMetricsCollector>(nullptr, &collector);
+}
+
+void BlockTreeCacheMetricsReporter::reportBatchPrivateReclaimed(size_t blocks) const {
+    if (metrics_reporter_ == nullptr) {
+        return;
+    }
+    RtpLLMCacheReuseMetricsCollector collector;
+    collector.batch_private_blocks           = static_cast<int64_t>(blocks);
+    collector.report_batch_private_reclaimed = true;
+    metrics_reporter_->report<RtpLLMCacheReuseMetrics, RtpLLMCacheReuseMetricsCollector>(nullptr, &collector);
+}
+
+void BlockTreeCacheMetricsReporter::reportBatchPrivateActiveEpochs(size_t epochs) const {
+    if (metrics_reporter_ == nullptr) {
+        return;
+    }
+    RtpLLMCacheReuseMetricsCollector collector;
+    collector.batch_private_active_epochs        = static_cast<int64_t>(epochs);
+    collector.report_batch_private_active_epochs = true;
+    metrics_reporter_->report<RtpLLMCacheReuseMetrics, RtpLLMCacheReuseMetricsCollector>(nullptr, &collector);
+}
+
 int BlockTreeCacheMetricsReporter::transferDirectionIndex(Tier source_tier, Tier target_tier) {
     if (source_tier == Tier::DEVICE && target_tier == Tier::HOST) {
         return 0;

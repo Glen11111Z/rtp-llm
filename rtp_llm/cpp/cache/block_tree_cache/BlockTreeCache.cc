@@ -51,6 +51,7 @@ BlockTreeCache::BlockTreeCache(std::unique_ptr<BlockTree>                     tr
             config_.host_cache_sync_timeout_ms,
             config_.enable_device_cache,
             storage_backend_,
+            &batch_private_registry_,
             [this](bool check_watermark) { onWorkflowSettledLocked(check_watermark); }),
     storer_(tree_.get(),
             evictor_,
@@ -143,14 +144,73 @@ TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
 }
 
 BlockTreeMatchResult BlockTreeCache::match(const CacheKeysType&               cache_keys,
-                                           const std::function<bool(size_t)>& valid_prefix) {
+                                           const std::function<bool(size_t)>& valid_prefix,
+                                           int64_t                            epoch) {
+    if (epoch > 0 && !supportsBatchPrivate()) {
+        epoch = 0;
+    }
     BlockTreeMatchResult result;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        result = loader_.matchLocked(cache_keys, valid_prefix);
+        result = loader_.matchLocked(cache_keys, valid_prefix, epoch);
     }
     metrics_reporter_->reportCacheReuseTimeMetrics(result.reuse_time_metrics_snapshots);
     return result;
+}
+
+bool BlockTreeCache::supportsBatchPrivate() const {
+    const auto& group_sets = tree_->groupSets();
+    return !group_sets.empty()
+           && std::all_of(group_sets.begin(), group_sets.end(), [](const GroupSetPtr& group_set) {
+                  return group_set != nullptr && group_set->groupType() == CacheGroupType::FULL;
+               });
+}
+
+void BlockTreeCache::registerBatchPrivate(const CacheKeysType&                              cache_keys,
+                                          const std::vector<std::vector<GroupSetResource>>& resources,
+                                          int64_t                                          epoch,
+                                          int64_t                                          owner_stream_id) {
+    if (epoch <= 0) {
+        return;
+    }
+    size_t registered_blocks = 0;
+    size_t reclaimed_blocks  = 0;
+    {
+        std::lock_guard<std::mutex>     lock(mutex_);
+        const std::vector<GroupSetPtr>& group_sets = tree_->groupSets();
+        if (!supportsBatchPrivate()) {
+            return;
+        }
+        reclaimed_blocks  = batch_private_registry_.reapStaleEpochs(epoch, group_sets);
+        registered_blocks = batch_private_registry_.registerKeys(
+            epoch, owner_stream_id, cache_keys, resources, group_sets);
+        reclaimed_blocks += batch_private_registry_.reclaimToLimit(config_.batch_private_max_entries, group_sets);
+    }
+    if (registered_blocks != 0) {
+        metrics_reporter_->reportBatchPrivateRegistered(registered_blocks);
+    }
+    if (reclaimed_blocks != 0) {
+        metrics_reporter_->reportBatchPrivateReclaimed(reclaimed_blocks);
+    }
+}
+
+void BlockTreeCache::dropBatchPrivate(int64_t epoch, int64_t owner_stream_id) {
+    if (epoch <= 0) {
+        return;
+    }
+    size_t reclaimed_blocks = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        reclaimed_blocks = batch_private_registry_.dropOwner(epoch, owner_stream_id, tree_->groupSets());
+    }
+    if (reclaimed_blocks != 0) {
+        metrics_reporter_->reportBatchPrivateReclaimed(reclaimed_blocks);
+    }
+}
+
+void BlockTreeCache::dumpBatchPrivate() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    batch_private_registry_.dump();
 }
 
 void BlockTreeCache::insert(const CacheKeysType&                              cache_keys,
@@ -228,6 +288,7 @@ CacheStats BlockTreeCache::getStats() const {
     stats.device_heap_total_size    = candidates.device_candidates;
     stats.host_heap_total_size      = candidates.host_candidates;
     stats.disk_heap_total_size      = candidates.disk_candidates;
+    stats.batch_private_entries     = batch_private_registry_.entryCount();
     return stats;
 }
 
@@ -238,11 +299,14 @@ std::vector<BlockTreePoolMetricsSnapshot> BlockTreeCache::poolMetricsSnapshots()
 
 void BlockTreeCache::reportMetrics() const {
     std::vector<BlockTreeEvictableMetricsSnapshot> snapshots;
+    size_t                                         batch_private_epochs = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        snapshots = metrics_reporter_->collectEvictableMetricsSnapshots(tree_->groupSets(), evictor_);
+        snapshots            = metrics_reporter_->collectEvictableMetricsSnapshots(tree_->groupSets(), evictor_);
+        batch_private_epochs = batch_private_registry_.activeEpochCount();
     }
     metrics_reporter_->reportEvictableCandidateCount(snapshots);
+    metrics_reporter_->reportBatchPrivateActiveEpochs(batch_private_epochs);
     metrics_reporter_->reportQueueBacklog(task_pool_->queueSizes(), "business");
     metrics_reporter_->reportQueueBacklog(transfer_dispatcher_->queueSizes(), "transfer");
 }

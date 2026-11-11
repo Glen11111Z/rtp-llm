@@ -100,6 +100,16 @@ void appendPoolSummary(std::ostringstream&          os,
        << ", blocks=" << pool_config.physical_block_count;
 }
 
+// Batch-private reuse overlays a suffix onto the matched prefix, which is only
+// representable when every group keeps its full history (FULL groups).
+bool batchPrivateTopologySupported(const CacheConfig& config) {
+    const auto& group_tags = config.groupTags();
+    return !group_tags.empty()
+           && std::all_of(group_tags.begin(), group_tags.end(), [&config](const std::string& tag) {
+                  return config.group(tag).policy.group_type == CacheGroupType::FULL;
+               });
+}
+
 }  // namespace
 
 CoordinatorCacheManager::~CoordinatorCacheManager() {
@@ -501,12 +511,13 @@ CoordinatorCacheManager::prepareKVCache(const CacheKeysType&                 cac
                                         BatchKVCacheResource&                kv_resource,
                                         const std::shared_ptr<CPSlotMapper>& cp_mapper,
                                         PreparedKVCache&                     prepared,
+                                        int64_t                              epoch,
                                         const std::function<bool(size_t)>&   valid_prefix) {
     if (!block_tree_cache_ || cache_keys.empty()) {
         return nullptr;
     }
     const int                         cp_scale     = (cp_mapper && cp_mapper->isSharded()) ? cp_mapper->cpSize() : 1;
-    BlockTreeMatchResult              match_result = block_tree_cache_->match(cache_keys, valid_prefix);
+    BlockTreeMatchResult              match_result = block_tree_cache_->match(cache_keys, valid_prefix, epoch);
     std::shared_ptr<LoadAsyncContext> load_context = std::move(match_result.async_context);
     prepared.matched_device_blocks                 = match_result.matched_device_blocks;
     prepared.total_logical_blocks =
@@ -534,9 +545,14 @@ CoordinatorCacheManager::prepareKVCache(const CacheKeysType&                 cac
     };
 
     for (const auto& resource : match_result.matched_device_resources) {
-        const size_t canonical_start = match_result.matched_device_blocks - resource.node_blocks.size();
+        RTP_LLM_CHECK_WITH_INFO(resource.start_index + resource.node_blocks.size()
+                                    <= match_result.matched_device_blocks,
+                                "matched resource exceeds reusable prefix: start=%zu size=%zu prefix=%zu",
+                                resource.start_index,
+                                resource.node_blocks.size(),
+                                match_result.matched_device_blocks);
         for (size_t i = 0; i < resource.node_blocks.size(); ++i) {
-            set_group_set_blocks(resource.group_set_id, canonical_start + i, resource.node_blocks[i].second);
+            set_group_set_blocks(resource.group_set_id, resource.start_index + i, resource.node_blocks[i].second);
         }
     }
 
@@ -572,6 +588,11 @@ MallocResult CoordinatorCacheManager::initMallocForCommonLen(const MallocInfo& m
     prepared.referenced_blocks.resize(kv_cache_groups_.size());
     std::shared_ptr<LoadAsyncContext> load_context;
 
+    // A batch epoch turns the lookup into a device-only one that additionally sees
+    // blocks published by same-epoch siblings. Non-FULL topologies cannot express
+    // that suffix overlay, so they keep the global-only path.
+    const int64_t batch_epoch = batchPrivateTopologySupported(config_) ? malloc_info.epoch : 0;
+
     if (malloc_info.enable_cache_lookup) {
         CacheKeysType match_keys = cpCanonicalCacheKeys(cp_mapper, cache_keys);
         const size_t  max_keys   = static_cast<size_t>(config_.maxPrefixReuseTokens(seq_len))
@@ -588,6 +609,7 @@ MallocResult CoordinatorCacheManager::initMallocForCommonLen(const MallocInfo& m
                            *kv_resource,
                            cp_mapper,
                            prepared,
+                           batch_epoch,
                            [tokens = malloc_info.complete_token_ids, reuse_unit_tokens](size_t count) {
                                return tokens->isValidReuseLength(static_cast<int>(count) * reuse_unit_tokens);
                            });
@@ -1044,6 +1066,27 @@ void CoordinatorCacheManager::insertIntoCache(const InsertInfo& insert_info, siz
         }
         insert_keys.resize(publish_prefix);
         resources.resize(publish_prefix);
+        if (insert_info.epoch > 0) {
+            if (insert_info.is_resident) {
+                RTP_LLM_LOG_WARNING("batch-private insert rejects resident data, epoch=%ld owner=%ld",
+                                    insert_info.epoch,
+                                    insert_info.owner_stream_id);
+                continue;
+            }
+            if (!batchPrivateTopologySupported(config_)) {
+                if (!batch_private_topology_warned_.exchange(true, std::memory_order_relaxed)) {
+                    RTP_LLM_LOG_WARNING("batch-private reuse disabled: cache topology must consist of FULL groups "
+                                        "only, epoch=%ld",
+                                        insert_info.epoch);
+                }
+                continue;
+            }
+            // Batch-private data must never reach the global prefix cache: it is
+            // visible only to same-epoch siblings and is released with its owner.
+            block_tree_cache_->registerBatchPrivate(
+                insert_keys, resources, insert_info.epoch, insert_info.owner_stream_id);
+            continue;
+        }
         if (insert_info.is_resident) {
             const size_t batch_resident_prefix_length =
                 block_tree_cache_->insert(insert_keys, resources, insert_info.target_tier, true);

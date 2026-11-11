@@ -510,6 +510,20 @@ void KVCacheManager::insertIntoCache(const InsertInfo& insert_info, size_t& resi
     reportCacheOperation(metrics_reporter_, RtpLLMCacheOperationMetricsCollector::OpType::INSERT, begin_time_us);
 }
 
+void KVCacheManager::dropBatchPrivate(int64_t epoch, int64_t owner_stream_id) {
+    if (block_tree_cache_ == nullptr) {
+        return;
+    }
+    block_tree_cache_->dropBatchPrivate(epoch, owner_stream_id);
+}
+
+void KVCacheManager::dumpBatchPrivate() const {
+    if (block_tree_cache_ == nullptr) {
+        return;
+    }
+    block_tree_cache_->dumpBatchPrivate();
+}
+
 int KVCacheManager::singleBatchNeedBlocks(const BatchKVCacheResourcePtr& batch_kv_cache_resource,
                                           int                            seq_len,
                                           int                            reserve_step) const {

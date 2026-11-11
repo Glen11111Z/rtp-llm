@@ -54,6 +54,15 @@ pool_test_deps = [
 ] + cuda13_torch_link_deps + torch_deps()
 
 cc_test(
+    name = "batch_private_block_registry_test",
+    testonly = True,
+    srcs = ["BatchPrivateBlockRegistryTest.cc"],
+    copts = test_copts,
+    deps = test_deps + [":block_tree_cache_test_utils"],
+    env = {},
+)
+
+cc_test(
     name = "block_tree_cache_factory_test",
     exec_properties = {"gpu": "L20_CU13"},
     testonly = True,

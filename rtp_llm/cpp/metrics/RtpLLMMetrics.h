@@ -1212,22 +1212,29 @@ public:
     std::optional<double> reuse_block_first_hit_idletime_ms;
     double                reuse_block_hit_idletime_ms = 0;
 
-    int64_t match_cost_time_us            = 0;
-    int64_t load_prepare_latency_us       = 0;
-    int64_t load_wait_latency_us          = 0;
-    int64_t match_to_ready_latency_us     = 0;
-    int64_t join_dependency_count         = 0;
-    int64_t join_wait_latency_us          = 0;
-    bool    load_attempted                = false;
-    bool    load_success                  = false;
-    bool    report_reuse_metrics          = false;
-    bool    report_reuse_time_metrics     = false;
-    bool    report_match_cost_time        = false;
-    bool    report_match_to_ready_latency = false;
-    bool    report_load_metrics           = false;
-    bool    report_load_wait_latency      = false;
-    bool    report_load_join              = false;
-    bool    report_load_join_wait         = false;
+    int64_t match_cost_time_us                 = 0;
+    int64_t load_prepare_latency_us            = 0;
+    int64_t load_wait_latency_us               = 0;
+    int64_t match_to_ready_latency_us          = 0;
+    int64_t join_dependency_count              = 0;
+    int64_t join_wait_latency_us               = 0;
+    int64_t batch_private_blocks               = 0;
+    int64_t batch_private_match_cost_us        = 0;
+    int64_t batch_private_active_epochs        = 0;
+    bool    load_attempted                     = false;
+    bool    load_success                       = false;
+    bool    report_reuse_metrics               = false;
+    bool    report_reuse_time_metrics          = false;
+    bool    report_match_cost_time             = false;
+    bool    report_match_to_ready_latency      = false;
+    bool    report_load_metrics                = false;
+    bool    report_load_wait_latency           = false;
+    bool    report_load_join                   = false;
+    bool    report_load_join_wait              = false;
+    bool    report_batch_private_registered    = false;
+    bool    report_batch_private_matched       = false;
+    bool    report_batch_private_reclaimed     = false;
+    bool    report_batch_private_active_epochs = false;
 };
 
 class RtpLLMRemoteCacheMatchMetricsCollector final {
@@ -1382,6 +1389,11 @@ public:
     kmonitor::MutableMetric* load_joined_request_qps_metric          = nullptr;
     kmonitor::MutableMetric* load_join_dependency_count_metric       = nullptr;
     kmonitor::MutableMetric* load_join_wait_latency_us_metric        = nullptr;
+    kmonitor::MutableMetric* batch_private_registered_blocks_metric  = nullptr;
+    kmonitor::MutableMetric* batch_private_matched_blocks_metric     = nullptr;
+    kmonitor::MutableMetric* batch_private_reclaimed_blocks_metric   = nullptr;
+    kmonitor::MutableMetric* batch_private_active_epochs_metric      = nullptr;
+    kmonitor::MutableMetric* batch_private_match_cost_us_metric      = nullptr;
 
 private:
     AUTIL_LOG_DECLARE();

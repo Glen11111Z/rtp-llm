@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -17,6 +18,7 @@
 
 namespace rtp_llm {
 
+class BatchPrivateBlockRegistry;
 class BlockTransferDispatcher;
 class BlockTreeTaskPool;
 
@@ -44,11 +46,15 @@ public:
                     int                             host_timeout_ms,
                     bool                            enable_device_cache,
                     std::shared_ptr<StorageBackend> storage_backend,
+                    BatchPrivateBlockRegistry*      batch_private_registry,
                     SettledFn                       settled);
 
     // The caller must hold the shared BlockTreeCache mutex.
+    // epoch > 0 restricts the lookup to device-resident data and additionally
+    // matches batch-private blocks published by same-epoch sibling streams.
     BlockTreeMatchResult matchLocked(const CacheKeysType&               cache_keys,
-                                     const std::function<bool(size_t)>& valid_prefix = {});
+                                     const std::function<bool(size_t)>& valid_prefix = {},
+                                     int64_t                            epoch        = 0);
     BlockIndicesType     matchedBlocksForGroup(std::string_view                      group_tag,
                                                const std::vector<MultiNodeResource>& matched_resources) const;
     bool                 abortPendingLoad(const std::shared_ptr<AsyncContext>& context);
@@ -65,7 +71,8 @@ private:
                                                    std::vector<BlockTreeCacheReuseTimeMetricsSnapshot>& snapshots);
     BlockTreeMatchResult                                createMatchResult(std::vector<TreeNode*>&            path,
                                                                           const CacheKeysType&               cache_keys,
-                                                                          const std::function<bool(size_t)>& valid_prefix);
+                                                                          const std::function<bool(size_t)>& valid_prefix,
+                                                                          int64_t                            epoch);
     StorageRequest makeStorageRequest(const CacheKeysType& cache_keys, size_t local_matched_blocks_num) const;
     bool           commitLoad(const std::shared_ptr<LoadAsyncContext>& context);
     void           abortLoadLocked(const std::vector<TransferDescriptor>& load_descs,
@@ -94,6 +101,7 @@ private:
     std::mutex&                             mutex_;
     bool                                    enable_device_cache_{true};
     std::shared_ptr<StorageBackend>         storage_backend_;
+    BatchPrivateBlockRegistry*              batch_private_registry_{nullptr};
     SettledFn                               settled_;
     LoadTaskRunner                          load_task_runner_;
     LoadJoinRegistry                        load_join_registry_;

@@ -69,7 +69,7 @@ MultiNodeResource makeMultiNodeResourceForTest(size_t                        gro
                                                const MultiNodeBlocks&        blocks);
 
 size_t             unreferencedBlocksNum(const DeviceBlockPool& pool);
-DeviceBlockPoolPtr makeStructuralDevicePool(size_t group_set_id);
+DeviceBlockPoolPtr makeStructuralDevicePool(size_t group_set_id, bool preallocate_all_blocks = true);
 void releaseDeviceBlocks(BlockTreeCache& cache, const DeviceBlockPoolPtr& pool, const BlockIdList& blocks);
 void releaseRequestRefsForTest(BlockTreeCache& cache, const std::vector<MultiNodeResource>& resources);
 

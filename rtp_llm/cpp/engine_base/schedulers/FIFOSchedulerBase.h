@@ -65,6 +65,11 @@ protected:
     }
     virtual void fillExtraMetrics(RtpLLMSchedulerMetricsCollector& collector) const {}
     virtual void appendExtraRunningTaskList(std::vector<EngineScheduleInfo::TaskInfo>& task_list) const {}
+    // Batch identity handed to newly admitted streams for intra-batch KV cache
+    // reuse. 0 disables the feature; schedulers that do not implement it keep 0.
+    virtual int64_t nextBatchEpoch() {
+        return 0;
+    }
 
     bool   checkInputLength(const GenerateStreamPtr& stream);
     absl::Status checkChunkedPrefillRequest(const GenerateStreamPtr& stream);

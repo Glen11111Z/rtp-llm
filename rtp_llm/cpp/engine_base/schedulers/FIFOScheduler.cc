@@ -20,7 +20,8 @@ FIFOScheduler::FIFOScheduler(const RuntimeConfig&                   runtime_conf
                              const ModelSpecificConfig&             model_specific_config,
                              const std::shared_ptr<KVCacheManager>& cache_manager,
                              const kmonitor::MetricsReporterPtr     metrics_reporter,
-                             const int                              max_score_len):
+                             const int                              max_score_len,
+                             const bool                             enable_reuse_in_batch):
     FIFOSchedulerBase(runtime_config,
                       model_config,
                       pd_sep_config,
@@ -34,21 +35,28 @@ FIFOScheduler::FIFOScheduler(const RuntimeConfig&                   runtime_conf
         std::max<int64_t>(runtime_config.fifo_scheduler_config.max_batch_tokens_without_cache, 0))),
     prefill_cp_size_(parallelism_config.prefill_cp_config.is_enabled() ?
                          static_cast<size_t>(std::max<int64_t>(parallelism_config.tp_size, 1)) :
-                         1) {
+                         1),
+    enable_batch_cache_reuse_(enable_reuse_in_batch) {
     RTP_LLM_LOG_INFO("max_generate_batch_size is [%zu], max_batch_tokens_size is [%zu], "
                      "max_batch_tokens_without_cache is [%zu], cp_force_single_prefill is [%d], "
-                     "prefill_cp_size is [%zu], max_inited_kv_cache_streams is [%zu]",
+                     "prefill_cp_size is [%zu], max_inited_kv_cache_streams is [%zu], "
+                     "enable_reuse_cache_in_batch is [%d]",
                      max_generate_batch_size_,
                      max_batch_tokens_size_,
                      max_batch_tokens_without_cache_,
                      cp_force_single_prefill_,
                      prefill_cp_size_,
-                     max_inited_kv_cache_streams_);
+                     max_inited_kv_cache_streams_,
+                     enable_batch_cache_reuse_);
 }
 
 FIFOScheduler::~FIFOScheduler() {
     (void)stop();
     RTP_LLM_LOG_INFO("destory FIFOScheduler");
+}
+
+int64_t FIFOScheduler::nextBatchEpoch() {
+    return enable_batch_cache_reuse_ ? ++batch_epoch_counter_ : 0;
 }
 
 void FIFOScheduler::cancelGroups(StreamGroupQueue& group_queue) {
@@ -386,6 +394,10 @@ void FIFOScheduler::admitWaitingStreams(list<GenerateStreamPtr>&       waiting_s
         }
     }
 
+    // One batch identity per scheduling round: every stream newly admitted by
+    // this call can reuse KV blocks registered by its round siblings.
+    const int64_t batch_epoch = nextBatchEpoch();
+
     for (auto it = waiting_streams.begin(); it != waiting_streams.end();) {
         auto  current = it++;
         auto& stream  = *current;
@@ -432,6 +444,9 @@ void FIFOScheduler::admitWaitingStreams(list<GenerateStreamPtr>&       waiting_s
         const auto state                 = stream->getStatus();
         const bool load_initiated_before = stream->hasEvent(StreamEvents::LoadInitiated);
         if (!stream->hasEvent(StreamEvents::CanRun)) {
+            // Only first-time admissions join this round's batch epoch; a stream
+            // that already carries CanRun keeps the identity it was admitted with.
+            stream->setBatchEpoch(batch_epoch);
             stream->reportEvent(StreamEvents::CanRun);
         }
 
@@ -566,6 +581,9 @@ void FIFOScheduler::evaluateWaitingGroupQueue() {
     StreamGroup  admitted_streams;
     const size_t inited_kv_streams       = max_inited_kv_cache_streams_ > 0 ? countInitedKVCacheStreams() : 0;
     size_t       newly_inited_kv_streams = 0;
+    // A group is admitted whole at one execution boundary, so every member
+    // shares one batch epoch.
+    const int64_t batch_epoch = nextBatchEpoch();
     for (auto it = group.begin(); it != group.end();) {
         auto       current           = it++;
         auto&      stream            = *current;
@@ -579,6 +597,7 @@ void FIFOScheduler::evaluateWaitingGroupQueue() {
         }
 
         if (!stream->hasEvent(StreamEvents::CanRun)) {
+            stream->setBatchEpoch(batch_epoch);
             stream->reportEvent(StreamEvents::CanRun);
         }
         const auto state = stream->moveToNext();

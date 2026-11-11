@@ -76,6 +76,11 @@ struct MallocInfo {
     // Initial chunk admission reserves fixed sparse banks for this maximum grant.
     int max_chunk_tokens = 0;
 
+    // Batch identity of the requesting stream. 0 keeps the global-only lookup
+    // path; >0 additionally matches batch-private blocks published by an
+    // earlier same-epoch stream in this scheduling batch.
+    int64_t epoch = 0;
+
     int incrSeqLen() const;
 };
 
@@ -139,6 +144,10 @@ struct InsertInfo {
     CompleteTokenIdsPtr     complete_token_ids;
     bool                    is_resident;
     Tier                    target_tier{Tier::DEVICE};
+    // 0 publishes into the global prefix cache. >0 publishes a batch-private
+    // entry owned by owner_stream_id and visible only to same-epoch siblings.
+    int64_t epoch           = 0;
+    int64_t owner_stream_id = 0;
 };
 
 }  // namespace rtp_llm

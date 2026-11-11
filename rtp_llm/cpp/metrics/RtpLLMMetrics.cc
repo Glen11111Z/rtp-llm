@@ -941,6 +941,16 @@ bool RtpLLMCacheReuseMetrics::init(kmonitor::MetricsGroupManager* manager) {
     REGISTER_QPS_MUTABLE_METRIC(load_joined_request_qps_metric, "rtp_llm_kv_cache_load_joined_request_qps");
     REGISTER_GAUGE_MUTABLE_METRIC(load_join_dependency_count_metric, "rtp_llm_kv_cache_load_join_dependency_count");
     REGISTER_GAUGE_MUTABLE_METRIC(load_join_wait_latency_us_metric, "rtp_llm_kv_cache_load_join_wait_latency_us");
+    REGISTER_GAUGE_MUTABLE_METRIC(batch_private_registered_blocks_metric,
+                                  "rtp_llm_kv_cache_batch_private_registered_blocks");
+    REGISTER_GAUGE_MUTABLE_METRIC(batch_private_matched_blocks_metric,
+                                  "rtp_llm_kv_cache_batch_private_matched_blocks");
+    REGISTER_GAUGE_MUTABLE_METRIC(batch_private_reclaimed_blocks_metric,
+                                  "rtp_llm_kv_cache_batch_private_reclaimed_blocks");
+    REGISTER_GAUGE_MUTABLE_METRIC(batch_private_active_epochs_metric,
+                                  "rtp_llm_kv_cache_batch_private_active_epochs");
+    REGISTER_GAUGE_MUTABLE_METRIC(batch_private_match_cost_us_metric,
+                                  "rtp_llm_kv_cache_batch_private_match_cost_us");
     return true;
 }
 
@@ -977,6 +987,19 @@ void RtpLLMCacheReuseMetrics::report(const kmonitor::MetricsTags* tags, RtpLLMCa
     }
     if (collector->report_load_join_wait) {
         load_join_wait_latency_us_metric->Report(tags, collector->join_wait_latency_us);
+    }
+    if (collector->report_batch_private_registered) {
+        REPORT_MUTABLE_METRIC(batch_private_registered_blocks_metric, collector->batch_private_blocks);
+    }
+    if (collector->report_batch_private_matched) {
+        REPORT_MUTABLE_METRIC(batch_private_matched_blocks_metric, collector->batch_private_blocks);
+        REPORT_MUTABLE_METRIC(batch_private_match_cost_us_metric, collector->batch_private_match_cost_us);
+    }
+    if (collector->report_batch_private_reclaimed) {
+        REPORT_MUTABLE_METRIC(batch_private_reclaimed_blocks_metric, collector->batch_private_blocks);
+    }
+    if (collector->report_batch_private_active_epochs) {
+        REPORT_MUTABLE_METRIC(batch_private_active_epochs_metric, collector->batch_private_active_epochs);
     }
     if (collector->report_match_to_ready_latency) {
         kmonitor::MetricsTags match_to_ready_tags = tags ? kmonitor::MetricsTags(*tags) : kmonitor::MetricsTags();

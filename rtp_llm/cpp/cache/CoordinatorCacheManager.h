@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -235,6 +236,8 @@ protected:
     // init-malloc callers can all pass the same reserve check and collectively
     // consume the forward-progress reserve before any one of them allocates.
     std::mutex malloc_mutex_;
+    // Warn-once flag for batch-private registrations on non-FULL topologies.
+    std::atomic<bool> batch_private_topology_warned_{false};
 
     struct PreparedKVCache {
         size_t                         matched_device_blocks = 0;
@@ -249,6 +252,7 @@ protected:
                                                      BatchKVCacheResource&                kv_resource,
                                                      const std::shared_ptr<CPSlotMapper>& cp_mapper,
                                                      PreparedKVCache&                     prepared,
+                                                     int64_t                              epoch,
                                                      const std::function<bool(size_t)>&   valid_prefix = {});
     bool                              materializeInitialBlocks(const MallocInfo& malloc_info,
                                                                PreparedKVCache&  prepared,
