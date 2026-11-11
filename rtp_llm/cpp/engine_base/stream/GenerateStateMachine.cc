@@ -87,6 +87,11 @@ void GenerateStateMachine::handleWaiting() {
         } else if (stream_cache_resource_->resourceContext().role_type != RoleType::DECODE) {
             // Loading cache 失败或不需要loading，直接触发重计算
             // 当前decodeRpcServer会调用moveToNext，判断role type避免decodeRpcServer在enqueue前提早走到running状态
+            //
+            // No connector load pending: block contents are either filled by the
+            // device-cache match or will be written by this stream's own forward
+            // this round, and per-layer K/V stores precede sibling attention reads.
+            stream_cache_resource_->insertBatchPrivateBlocks();
             transitionToRunning();
         }
         return;
@@ -99,6 +104,10 @@ void GenerateStateMachine::handleWaiting() {
     // exactly like a decode stream.
     if (stream_cache_resource_->resourceContext().role_type == RoleType::PREFILL
         && stream_cache_resource_->isContextStream()) {
+        // Second pass after LOADING_CACHE: connector loads have completed (or the
+        // match failed and this stream rewrites the full uncached range), so the
+        // blocks are safe to expose to same-batch siblings.
+        stream_cache_resource_->insertBatchPrivateBlocks();
         transitionToRunning();
         return;
     }
@@ -112,6 +121,9 @@ void GenerateStateMachine::handleWaiting() {
         releaseResource();
         return;
     }
+    // No connector load is pending past this point, so the newly allocated
+    // blocks are safe to expose before the stream enters RUNNING.
+    stream_cache_resource_->insertBatchPrivateBlocks();
     transitionToRunning();
 }
 

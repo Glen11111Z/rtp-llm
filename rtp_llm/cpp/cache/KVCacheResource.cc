@@ -508,4 +508,38 @@ void KVCacheResource::swapBlocks(std::string_view group_tag, size_t rhs, size_t 
     mutableBlockIds(group_tag).swap(rhs, lhs);
 }
 
+KVCacheResource KVCacheResource::prefixCopy(size_t n_blocks) const {
+    KVCacheResource copy;
+    copy.topology_                        = topology_;
+    copy.layer_group_tags_                = layer_group_tags_;
+    copy.cache_keys_are_cp_canonical_     = cache_keys_are_cp_canonical_;
+    copy.device_reuse_block_num_          = device_reuse_block_num_;
+    copy.memory_reuse_block_num_          = memory_reuse_block_num_;
+    copy.disk_reuse_block_num_            = disk_reuse_block_num_;
+    copy.storage_backend_reuse_block_num_ = storage_backend_reuse_block_num_;
+    // The prefix is already block-aligned, so dropLastPartialBlock() downstream
+    // must not pop another key from it.
+    copy.last_block_aligned_ = true;
+
+    const size_t key_n = std::min(n_blocks, cache_keys.size());
+    copy.cache_keys.assign(cache_keys.begin(), cache_keys.begin() + key_n);
+
+    // Row holders are shared by design, so slice into fresh BlockIds instead of
+    // mutating rows the owning stream still reads.
+    copy.group_block_ids.tag_to_index_ = group_block_ids.tag_to_index_;
+    copy.group_block_ids.rows_.reserve(group_block_ids.rows_.size());
+    for (const auto& row : group_block_ids.rows_) {
+        auto         sliced  = std::make_shared<BlockIds>(row->kernelBlocksPerKvBlock());
+        const auto&  src     = row->blocks();
+        const size_t block_n = std::min(n_blocks, src.size());
+        if (block_n > 0) {
+            sliced->assign(BlockIndicesType(src.begin(), src.begin() + block_n));
+        }
+        copy.group_block_ids.rows_.push_back(std::move(sliced));
+    }
+    // block_dependencies are left empty: insertIntoCache only reads cacheKeys()
+    // and blocks(tag).
+    return copy;
+}
+
 }  // namespace rtp_llm

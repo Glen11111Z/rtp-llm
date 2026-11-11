@@ -382,7 +382,9 @@ void NormalEngine::initScheduler() {
                                            pd_sep_config,
                                            parallelism_config,
                                            resource_context_.cache_manager,
-                                           metrics_reporter_));
+                                           metrics_reporter_,
+                                           /*max_score_len=*/1,
+                                           kv_cache_config.enable_reuse_cache_in_batch));
         RTP_LLM_LOG_INFO("create fifo scheduler done");
     }
 }

@@ -334,7 +334,7 @@ void releaseDeviceBlocks(BlockTreeCache& cache, const DeviceBlockPoolPtr& pool, 
     RTP_LLM_CHECK(false);
 }
 
-DeviceBlockPoolPtr makeStructuralDevicePool(size_t group_set_id) {
+DeviceBlockPoolPtr makeStructuralDevicePool(size_t group_set_id, bool preallocate_all_blocks) {
     constexpr size_t physical_block_count = 1024;
     constexpr size_t block_bytes          = 1;
 
@@ -364,8 +364,10 @@ DeviceBlockPoolPtr makeStructuralDevicePool(size_t group_set_id) {
     // access payload memory. Mark the logical pool ready without allocating a
     // CUDA tensor so these tests remain runnable on CPU-only test hosts.
     pool->markInitialized();
-    auto structural_blocks = pool->malloc(physical_block_count - 1);
-    RTP_LLM_CHECK(structural_blocks.has_value());
+    if (preallocate_all_blocks) {
+        auto structural_blocks = pool->malloc(physical_block_count - 1);
+        RTP_LLM_CHECK(structural_blocks.has_value());
+    }
     return pool;
 }
 

@@ -12,6 +12,7 @@ constexpr char kIgnoreRequestCacheSwitchesEnv[] = "RTP_LLM_IGNORE_REQUEST_CACHE_
 
 void ResourceContext::initCacheConfig(const KVCacheConfig& kv_cache_config) {
     reuse_cache                   = kv_cache_config.reuse_cache;
+    enable_reuse_cache_in_batch   = kv_cache_config.enable_reuse_cache_in_batch;
     enable_device_cache           = kv_cache_config.enable_device_cache;
     enable_memory_cache           = kv_cache_config.enable_memory_cache;
     enable_disk_cache             = kv_cache_config.enable_disk_cache;

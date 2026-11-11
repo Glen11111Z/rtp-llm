@@ -61,6 +61,7 @@ cc_library(
     srcs = [
         "BlockTree.cc",
         "BlockTreeCache.cc",
+        "batch_private/BatchPrivateBlockRegistry.cc",
         "diagnostic/FullPrefixInvariantScanner.cc",
         "storage_backend/StorageBackend.cc",
         "storage_backend/StorageBackendExecutor.cc",
@@ -106,6 +107,7 @@ cc_library(
     hdrs = [
         "BlockTree.h",
         "BlockTreeCache.h",
+        "batch_private/BatchPrivateBlockRegistry.h",
         "diagnostic/FullPrefixInvariantScanner.h",
         "BlockTreeCacheFactory.h",
         "BlockTreeCacheMetricsReporter.h",

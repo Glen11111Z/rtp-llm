@@ -9,6 +9,7 @@
 
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeTaskPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/ScopeRollback.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/batch_private/BatchPrivateBlockRegistry.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
 #include "rtp_llm/cpp/utils/Logger.h"
@@ -26,6 +27,7 @@ BlockTreeLoader::BlockTreeLoader(BlockTree*                      tree,
                                  int                             host_timeout_ms,
                                  bool                            enable_device_cache,
                                  std::shared_ptr<StorageBackend> storage_backend,
+                                 BatchPrivateBlockRegistry*      batch_private_registry,
                                  SettledFn                       settled):
     tree_(tree),
     evictor_(evictor),
@@ -35,6 +37,7 @@ BlockTreeLoader::BlockTreeLoader(BlockTree*                      tree,
     mutex_(mutex),
     enable_device_cache_(enable_device_cache),
     storage_backend_(std::move(storage_backend)),
+    batch_private_registry_(batch_private_registry),
     settled_(std::move(settled)),
     load_task_runner_(tree_->groupSets(), host_timeout_ms, disk_timeout_ms),
     load_join_registry_(tree),
@@ -47,18 +50,20 @@ BlockTreeLoader::BlockTreeLoader(BlockTree*                      tree,
         })) {}
 
 BlockTreeMatchResult BlockTreeLoader::matchLocked(const CacheKeysType&               cache_keys,
-                                                  const std::function<bool(size_t)>& valid_prefix) {
+                                                  const std::function<bool(size_t)>& valid_prefix,
+                                                  int64_t                            epoch) {
     if (cache_keys.empty()) {
         RTP_LLM_LOG_DEBUG("empty cache_keys, returning empty result");
         return {};
     }
 
     std::vector<TreeNode*> path   = tree_->findNode(cache_keys);
-    BlockTreeMatchResult   result = createMatchResult(path, cache_keys, valid_prefix);
-    RTP_LLM_LOG_DEBUG("matched %zu device blocks, cache_keys=%zu, tree_nodes=%zu",
+    BlockTreeMatchResult   result = createMatchResult(path, cache_keys, valid_prefix, epoch);
+    RTP_LLM_LOG_DEBUG("matched %zu device blocks, cache_keys=%zu, tree_nodes=%zu, epoch=%ld",
                       result.matched_device_blocks,
                       cache_keys.size(),
-                      tree_->size());
+                      tree_->size(),
+                      epoch);
     return result;
 }
 
@@ -143,10 +148,15 @@ void BlockTreeLoader::collectReuseTimeSnapshots(TreeNode*                       
 
 BlockTreeMatchResult BlockTreeLoader::createMatchResult(std::vector<TreeNode*>&            path,
                                                         const CacheKeysType&               cache_keys,
-                                                        const std::function<bool(size_t)>& valid_prefix) {
+                                                        const std::function<bool(size_t)>& valid_prefix,
+                                                        int64_t                            epoch) {
+    // Batch-private lookups only accept device-resident data: lower-tier loads and
+    // backend lookups cannot complete within the scheduling round that created the
+    // epoch, so an empty global prefix is still a usable starting point.
+    const bool           use_batch_private = epoch > 0 && batch_private_registry_ != nullptr;
     BlockTreeMatchResult result;
     std::vector<bool>    candidate_valid;
-    if (!path.empty() && !validMatch(path, candidate_valid, valid_prefix) && !storage_backend_) {
+    if (!path.empty() && !validMatch(path, candidate_valid, valid_prefix) && !storage_backend_ && !use_batch_private) {
         return result;
     }
     const int64_t  access_time_us = currentTimeUs();
@@ -184,6 +194,7 @@ BlockTreeMatchResult BlockTreeLoader::createMatchResult(std::vector<TreeNode*>& 
         const size_t       ready_reuse_count =
             std::min(group_set->computeReuseBlockCount(result.matched_device_blocks), result.matched_device_blocks);
         MultiNodeResource matched_device_resource{group_set_id, Tier::DEVICE};
+        matched_device_resource.start_index = result.matched_device_blocks - ready_reuse_count;
         for (size_t i = result.matched_device_blocks - ready_reuse_count; i < result.matched_device_blocks; ++i) {
             collectReuseTimeSnapshots(
                 path[i], group_set_id, access_seq, access_time_us, result.reuse_time_metrics_snapshots);
@@ -195,6 +206,9 @@ BlockTreeMatchResult BlockTreeLoader::createMatchResult(std::vector<TreeNode*>& 
             result.matched_device_resources.push_back(std::move(matched_device_resource));
         }
 
+        if (use_batch_private) {
+            continue;
+        }
         const size_t logical_reuse_count = std::min(group_set->computeReuseBlockCount(path.size()), path.size());
         for (size_t i = std::max(path.size() - logical_reuse_count, result.matched_device_blocks); i < path.size();
              ++i) {
@@ -222,7 +236,7 @@ BlockTreeMatchResult BlockTreeLoader::createMatchResult(std::vector<TreeNode*>& 
     }
 
     StorageRequest storage_request;
-    if (storage_backend_ && path.size() < cache_keys.size()) {
+    if (!use_batch_private && storage_backend_ && path.size() < cache_keys.size()) {
         storage_request = makeStorageRequest(cache_keys, path.size());
     }
     const bool use_storage = !storage_request.empty();
@@ -250,6 +264,50 @@ BlockTreeMatchResult BlockTreeLoader::createMatchResult(std::vector<TreeNode*>& 
                 metrics_reporter_.reportLoadJoin(join_dependency_count);
             }
         }
+    }
+    if (use_batch_private) {
+        const std::vector<GroupSetPtr>& group_sets             = tree_->groupSets();
+        const int64_t                   private_match_begin_us = currentTimeUs();
+        // Only a contiguous run starting at the global prefix end is reusable:
+        // siblings append their private suffix to whatever the global cache and
+        // earlier siblings already made device-resident this round.
+        std::vector<std::vector<std::vector<BlockIdxType>>> private_segments;  // [key][group_set][member]
+        for (size_t i = result.matched_device_blocks; i < cache_keys.size(); ++i) {
+            if (valid_prefix && !valid_prefix(i + 1)) {
+                break;
+            }
+            const auto* blocks = batch_private_registry_->findBlocks(cache_keys[i], epoch);
+            if (blocks == nullptr || blocks->size() != group_sets.size()) {
+                break;
+            }
+            bool complete = true;
+            for (size_t group_set_id = 0; group_set_id < group_sets.size() && complete; ++group_set_id) {
+                const auto& row          = (*blocks)[group_set_id];
+                const bool  row_complete = row.size() == group_sets[group_set_id]->devicePools().size()
+                                          && std::all_of(row.begin(), row.end(), [](BlockIdxType block) {
+                                                 return !isNullBlockIdx(block);
+                                             });
+                complete = complete && row_complete;
+            }
+            if (!complete) {
+                break;
+            }
+            private_segments.push_back(*blocks);
+        }
+        if (!private_segments.empty()) {
+            const size_t private_start = result.matched_device_blocks;
+            for (size_t group_set_id = 0; group_set_id < group_sets.size(); ++group_set_id) {
+                MultiNodeResource private_resource{group_set_id, Tier::DEVICE};
+                private_resource.start_index = private_start;
+                for (const auto& segment : private_segments) {
+                    private_resource.node_blocks.emplace_back(nullptr, segment[group_set_id]);
+                }
+                group_sets[group_set_id]->referenceBlocks(private_resource);
+                result.matched_device_resources.push_back(std::move(private_resource));
+            }
+            result.matched_device_blocks += private_segments.size();
+        }
+        metrics_reporter_.reportBatchPrivateMatched(private_segments.size(), currentTimeUs() - private_match_begin_us);
     }
     if (result.async_context) {
         result.async_context->setValidPrefix(valid_prefix);

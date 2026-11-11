@@ -47,6 +47,12 @@ public:
     bool                        asyncLoadCache();
     bool                        loadCacheDone();
 
+    // Publish the full-block prefix as a batch-private entry before this stream
+    // enters RUNNING, so same-epoch siblings admitted in the same batch can reuse
+    // it in the same forward pass. No-op unless enable_reuse_cache_in_batch and
+    // the scheduler assigned a batch epoch.
+    void insertBatchPrivateBlocks();
+
     // swap all linear groups rhs and lhs
     void swapLinearBlocks(int32_t batch_id, size_t rhs, size_t lhs);
 
@@ -139,17 +145,20 @@ private:
     void         recordCacheReuseMallocResult(const MallocResult& result);
     void         publishReuseLengths(int total_length, int host_length, int disk_length, int backend_length);
     absl::Status finalizeAllocatorLoad();
+    // Drops the batch-private entries published by this stream, once.
+    void releaseBatchPrivateBlocks();
 
     GenerateStream*                stream_;
     BatchKVCacheResourcePtr        batch_kv_cache_resource_;
     ResourceContext                resource_context_;
     std::vector<TaggedBlockIdPair> block_update_mapping_;
 
-    bool                             need_release_resource_ = true;
-    bool                             last_block_aligned_    = false;
-    int                              malloc_failed_times_   = 0;
-    bool                             fake_inited_           = false;
-    bool                             resource_released_     = false;
+    bool                             need_release_resource_    = true;
+    bool                             last_block_aligned_       = false;
+    int                              malloc_failed_times_      = 0;
+    bool                             fake_inited_              = false;
+    bool                             resource_released_        = false;
+    bool                             batch_private_registered_ = false;
     std::shared_ptr<AsyncContext>    allocator_load_context_;
     RtpLLMCacheReuseMetricsCollector cache_reuse_metrics_;
     int64_t                          malloc_begin_time_us_    = 0;

@@ -9,6 +9,7 @@
 
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTree.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeCacheMetricsReporter.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/batch_private/BatchPrivateBlockRegistry.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/evict/BlockTreeEvictor.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/group_set/GroupSet.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/load/BlockTreeLoader.h"
@@ -26,6 +27,8 @@ struct CacheStats {
     size_t device_heap_total_size{0};
     size_t host_heap_total_size{0};
     size_t disk_heap_total_size{0};
+    // Batch-private overlays currently pinned for same-epoch sibling reuse.
+    size_t batch_private_entries{0};
 };
 struct BlockTreeKeySnapshot {
     int64_t                   version{-1};
@@ -71,6 +74,10 @@ struct BlockTreeCacheConfig {
     // ---- FULL prefix invariant scanner (diagnostic only) ----
     // The factory zeroes this on ranks that do not own a mutable BlockTree.
     int64_t full_prefix_scan_interval_ms{0};  // 0 = disabled, no thread
+
+    // Fallback bound on live batch-private entries. The normal path releases each
+    // entry when its owning stream finishes; this only caps leaks.
+    size_t batch_private_max_entries{4096};
 
     // ---- Query helpers ----
     bool isTierEnabled(Tier tier) const {
@@ -122,7 +129,21 @@ public:
     // Reject pending loads and wait for allocator callbacks before its members are destroyed.
     void shutdownLoads();
 
-    BlockTreeMatchResult match(const CacheKeysType& cache_keys, const std::function<bool(size_t)>& valid_prefix = {});
+    // epoch > 0 restricts the lookup to device-resident data and additionally
+    // matches batch-private blocks published by same-epoch sibling streams.
+    BlockTreeMatchResult match(const CacheKeysType&               cache_keys,
+                               const std::function<bool(size_t)>& valid_prefix = {},
+                               int64_t                            epoch        = 0);
+    // Publishes device-resident blocks as batch-private entries scoped to epoch.
+    // Requires every GroupSet to be full-prefix; SWA/linear groups cannot be
+    // overlaid by an arbitrary suffix.
+    void registerBatchPrivate(const CacheKeysType&                              cache_keys,
+                              const std::vector<std::vector<GroupSetResource>>& resources,
+                              int64_t                                          epoch,
+                              int64_t                                          owner_stream_id);
+    void dropBatchPrivate(int64_t epoch, int64_t owner_stream_id);
+    // Logs live batch-private entries (epoch, owners, key count); debug only.
+    void dumpBatchPrivate() const;
     void                 insert(const CacheKeysType&                              cache_keys,
                                 const std::vector<std::vector<GroupSetResource>>& resources,
                                 Tier                                              target_tier);
@@ -181,6 +202,9 @@ public:
     }
 
 private:
+    // Batch-private overlays are only meaningful for full-prefix caches: SWA and
+    // linear groups cannot reuse an arbitrary suffix.
+    bool supportsBatchPrivate() const;
     void checkWatermark();
     // Caller holds mutex_.
     void onWorkflowSettledLocked(bool check_watermark);
@@ -194,9 +218,10 @@ private:
     mutable std::mutex                             mutex_;
     BlockTreeEvictor                               evictor_;
     bool                                           initialized_{false};
-    BlockTreeLoader                             loader_;
-    BlockTreeStorer                             storer_;
-    std::unique_ptr<FullPrefixInvariantScanner> full_prefix_scanner_;
+    BatchPrivateBlockRegistry                      batch_private_registry_;
+    BlockTreeLoader                                loader_;
+    BlockTreeStorer                                storer_;
+    std::unique_ptr<FullPrefixInvariantScanner>    full_prefix_scanner_;
 };
 
 using BlockTreeCachePtr = std::shared_ptr<BlockTreeCache>;
