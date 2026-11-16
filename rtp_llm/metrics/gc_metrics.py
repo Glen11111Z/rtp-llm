@@ -54,7 +54,9 @@ def drain_gc_metrics() -> None:
             stats[0] = pause_ms
         stats[1] += 1
     for gen, (max_pause_ms, count) in per_gen.items():
-        tags = {"gen": gen}
+        # kmonitor serializes tags with str.join; a non-str value would raise in
+        # the shared report thread and kill it for the whole process.
+        tags = {"gen": str(gen)}
         kmonitor.report(GaugeMetrics.GC_PAUSE_MS_METRIC, max_pause_ms, tags)
         kmonitor.report(GaugeMetrics.GC_COLLECTION_COUNT_METRIC, count, tags)
 

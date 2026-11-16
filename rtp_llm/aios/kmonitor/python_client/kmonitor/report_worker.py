@@ -75,8 +75,11 @@ class ReportWorker(object):
         self, metric_name: str, timestamp: int, data_point: MetricDataPoint
     ) -> ThriftFlumeEvent:
         value_str = str(data_point.value)
+        # Tag values are serialized with str.join here, so they must be coerced:
+        # an int tag used to raise TypeError and take the whole report thread
+        # down, silently dropping every metric from that process.
         tag_str: str = " ".join(
-            ["=".join([k, v]) for (k, v) in list(data_point.tags.items())]
+            ["=".join([str(k), str(v)]) for (k, v) in list(data_point.tags.items())]
         )
         report_message: bytes = " ".join(
             [metric_name, str(timestamp), value_str, tag_str]
