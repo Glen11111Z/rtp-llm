@@ -171,6 +171,26 @@ class GaugeMetrics(Enum):
     VIT_EMBEDDING_CACHE_TOKENS_METRIC = "py_rtp_vit_embedding_cache_tokens"
     VIT_EMBEDDING_CACHE_BYTES_METRIC = "py_rtp_vit_embedding_cache_bytes"
 
+    # batch_infer (the /dispatcher chunk entry point) bypasses generate_stream,
+    # so it historically emitted no pipeline timing at all. These two cover the
+    # same spans as ft_pre_pipeline_rt / ft_post_pipeline_rt for that path:
+    # pre = tokenize + input build, total = entry to decoded response.
+    BATCH_INFER_PRE_RT_METRIC = "ft_batch_infer_pre_rt"
+    BATCH_INFER_RT_METRIC = "ft_batch_infer_rt"
+
+    # CPython GC pauses, reported once per second by a background thread. Tagged
+    # by generation so a gen2 stop-the-world pause that eats the 150ms budget is
+    # separable from the high-frequency gen0/gen1 collections.
+    GC_PAUSE_MS_METRIC = "py_rtp_gc_pause_ms"
+    GC_COLLECTION_COUNT_METRIC = "py_rtp_gc_collection_count"
+
+    # Overshoot of a fixed-interval asyncio task, i.e. how long the event loop
+    # failed to schedule it. Reported only past a threshold, so the series stays
+    # near-empty until something (GC, blocking I/O, a GIL-holding call) stalls
+    # the loop long enough to matter.
+    EVENT_LOOP_LAG_MS_METRIC = "py_rtp_event_loop_lag_ms"
+    EVENT_LOOP_LAG_COUNT_METRIC = "py_rtp_event_loop_lag_count"
+
 
 class MetricReporter(object):
     def __init__(self, kmonitor: Any):

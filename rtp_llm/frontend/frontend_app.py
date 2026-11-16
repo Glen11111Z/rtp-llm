@@ -36,6 +36,8 @@ from rtp_llm.distribute.distributed_server import (
 from rtp_llm.embedding.embedding_type import TYPE_STR, EmbeddingType
 from rtp_llm.frontend.frontend_server import FrontendServer
 from rtp_llm.frontend.shutdown_manager import FrontendShutdownManager
+from rtp_llm.metrics.event_loop_metrics import start_event_loop_lag_sampler
+from rtp_llm.metrics.gc_metrics import install_gc_metric_hook
 from rtp_llm.openai.api_datatype import (
     BatchChatCompletionRequest,
     ChatCompletionRequest,
@@ -528,6 +530,17 @@ class FrontendApp(object):
             # freeze all current tracked objects to reduce gc cost
             gc.collect()
             gc.freeze()
+            install_gc_metric_hook()
+            # Opt-in generation threshold tuning to further cut gen2 stop-the-world
+            # pauses that can exceed the gRPC deadline. Reversible via env; unset
+            # leaves CPython defaults untouched.
+            gc_threshold = os.environ.get("RTP_FE_GC_THRESHOLD")
+            if gc_threshold:
+                try:
+                    gc.set_threshold(*(int(x) for x in gc_threshold.split(",")))
+                    logging.info("frontend gc threshold set to %s", gc_threshold)
+                except Exception:
+                    logging.warning("invalid RTP_FE_GC_THRESHOLD=%r, ignored", gc_threshold)
             server.run()
         except BaseException as e:
             raise e
@@ -583,6 +596,7 @@ class FrontendApp(object):
                     self.frontend_server._global_controller.max_concurrency * 2
                 )
             )
+            start_event_loop_lag_sampler()
 
         def draining_response():
             reason = (

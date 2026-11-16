@@ -684,6 +684,9 @@ class Pipeline(object):
         generate_env_config=None,
         **kwargs: Any,
     ) -> List[GenerateResponse]:
+        # This entry point is hit once per dispatched chunk and emits no
+        # pipeline timing otherwise, so it is the only place these spans exist.
+        begin_time = current_time_ms()
         generate_config = self.create_generate_config(
             generate_config_json,
             len(self.tokenizer),
@@ -734,6 +737,9 @@ class Pipeline(object):
             )
             inputs.append(gen_input)
 
+        kmonitor.report(
+            GaugeMetrics.BATCH_INFER_PRE_RT_METRIC, current_time_ms() - begin_time
+        )
         batch_outputs = await self.backend_rpc_server_visitor.batch_enqueue(inputs)
 
         stop_word_strs = generate_config.stop_words_str
@@ -762,4 +768,7 @@ class Pipeline(object):
                     generate_texts=generate_texts,
                 )
             )
+        kmonitor.report(
+            GaugeMetrics.BATCH_INFER_RT_METRIC, current_time_ms() - begin_time
+        )
         return responses
