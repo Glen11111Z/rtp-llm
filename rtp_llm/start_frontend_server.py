@@ -72,8 +72,12 @@ def start_frontend_server(
     )
     from rtp_llm.metrics import kmonitor
 
-    report_worker.reset_after_fork()
-    kmonitor.reset_after_fork()
+    try:
+        report_worker.reset_after_fork()
+        kmonitor.reset_after_fork()
+    except Exception as e:
+        # Metrics are non-essential; never let them block serving.
+        logging.error(f"failed to restart kmonitor reporter after fork: {e}")
 
     if local_rank == 0 and server_id == 0:
         logging.info(f"import FrontendApp took {time.time() - start_time:.2f}s")
