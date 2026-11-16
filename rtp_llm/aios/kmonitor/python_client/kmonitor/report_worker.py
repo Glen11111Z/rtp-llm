@@ -122,5 +122,19 @@ class ReportWorker(object):
     def stop(self) -> None:
         self.started = False
 
+    def reset_after_fork(self) -> None:
+        # Threads do not survive fork, so a child would keep updating metric
+        # objects that nothing flushes again. Rebuild transport and thread here.
+        flume = getattr(self, "flume", None)
+        self.metrics = {}
+        self.metric_lock = Lock()
+        self.started = False
+        if flume is not None:
+            try:
+                flume.close()
+            except Exception as e:
+                logging.warning(f"close inherited flume client failed: {e}")
+        self.__init__()
+
 
 report_worker = ReportWorker()

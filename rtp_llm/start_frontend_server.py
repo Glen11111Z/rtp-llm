@@ -64,6 +64,17 @@ def start_frontend_server(
     start_time = time.time()
     from rtp_llm.frontend.frontend_app import FrontendApp
 
+    # This process is forked from one that already started kmonitor; its
+    # reporting thread did not come along, so rebuild it before FrontendServer
+    # registers metrics, otherwise every report here is silently dropped.
+    from rtp_llm.aios.kmonitor.python_client.kmonitor.report_worker import (
+        report_worker,
+    )
+    from rtp_llm.metrics import kmonitor
+
+    report_worker.reset_after_fork()
+    kmonitor.reset_after_fork()
+
     if local_rank == 0 and server_id == 0:
         logging.info(f"import FrontendApp took {time.time() - start_time:.2f}s")
 

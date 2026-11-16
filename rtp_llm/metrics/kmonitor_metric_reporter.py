@@ -225,3 +225,9 @@ class MetricReporter(object):
                 self._matic_map[metric.value] = self._kmon.register_gauge_metric(
                     metric.value
                 )
+
+    def reset_after_fork(self):
+        # The inherited map points at metric objects owned by the parent's
+        # (now dead) reporting thread; drop it so init() registers again.
+        self._matic_map = {}
+        self._inited = False
