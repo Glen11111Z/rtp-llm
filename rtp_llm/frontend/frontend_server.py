@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 from fastapi import Request
 from fastapi import Request as RawRequest
@@ -292,6 +292,8 @@ class FrontendServer(object):
         self,
         request: Dict[str, Any],
         response: CompleteResponseAsyncGenerator,
+        batch_begin_time: Optional[int] = None,
+        batch_prompt_count: int = 0,
     ):
         # HTTP SERVER span owner for streaming requests: the four exits below
         # (success / cancel / error / finally) all funnel into the idempotent
@@ -309,6 +311,8 @@ class FrontendServer(object):
             await self._collect_complete_response_and_record_access_log(
                 request, response
             )
+            if batch_begin_time is not None:
+                self._report_batch_chunk(batch_begin_time, batch_prompt_count)
             if trace_state is not None:
                 _record_http_status(trace_state, 200)
                 trace_state.finish()
@@ -335,6 +339,8 @@ class FrontendServer(object):
                     "source": request.get("source", "unkown"),
                 },
             )
+            if batch_begin_time is not None:
+                self._report_batch_chunk_error()
             raise
         except BaseException as e:
             # 捕获非Cancel以外所有的异常,所以使用BaseException
@@ -355,6 +361,8 @@ class FrontendServer(object):
                     "error_code": str(format_e.get("error_code_str", -1)),
                 },
             )
+            if batch_begin_time is not None:
+                self._report_batch_chunk_error()
             yield response_data_prefix + json.dumps(
                 format_e, ensure_ascii=False
             ) + "\r\n\r\n"
@@ -562,6 +570,33 @@ class FrontendServer(object):
             CURRENT_TRACE_STATE.set(previous_trace_state)
             self._global_controller.decrement()
 
+    def _report_batch_chunk(self, begin_time_ms: int, prompt_count: int):
+        # One unit is one prompt_batch chunk, not one prompt. Both the dedicated
+        # /batch_infer route and the generate entry's prompt_batch mode (the one
+        # the upstream Dispatcher actually posts to) report through here.
+        kmonitor.report(
+            GaugeMetrics.BATCH_INFER_E2E_RT_METRIC, current_time_ms() - begin_time_ms
+        )
+        kmonitor.report(GaugeMetrics.BATCH_INFER_PROMPT_COUNT_METRIC, prompt_count)
+        kmonitor.report(
+            AccMetrics.BATCH_INFER_QPS_METRIC,
+            1,
+            {
+                "rank_id": self.rank_id,
+                "server_id": self.server_id,
+            },
+        )
+
+    def _report_batch_chunk_error(self):
+        kmonitor.report(
+            AccMetrics.BATCH_INFER_ERROR_QPS_METRIC,
+            1,
+            {
+                "rank_id": self.rank_id,
+                "server_id": self.server_id,
+            },
+        )
+
     async def batch_infer(self, req: dict, raw_request: Request):
         from rtp_llm.frontend.frontend_worker import BatchPipelineResponse
 
@@ -608,29 +643,10 @@ class FrontendServer(object):
                 generate_config=generate_config,
             )
             response = ORJSONResponse(content=result.model_dump(exclude_none=True))
-            kmonitor.report(
-                GaugeMetrics.BATCH_INFER_E2E_RT_METRIC,
-                current_time_ms() - begin_time,
-            )
-            kmonitor.report(GaugeMetrics.BATCH_INFER_PROMPT_COUNT_METRIC, len(prompts))
-            kmonitor.report(
-                AccMetrics.BATCH_INFER_QPS_METRIC,
-                1,
-                {
-                    "rank_id": self.rank_id,
-                    "server_id": self.server_id,
-                },
-            )
+            self._report_batch_chunk(begin_time, len(prompts))
             return response
         except BaseException as error:
-            kmonitor.report(
-                AccMetrics.BATCH_INFER_ERROR_QPS_METRIC,
-                1,
-                {
-                    "rank_id": self.rank_id,
-                    "server_id": self.server_id,
-                },
-            )
+            self._report_batch_chunk_error()
             if trace_state is not None:
                 _record_http_status(trace_state, 500)
                 trace_state.finish(
@@ -838,26 +854,45 @@ class FrontendServer(object):
                 "source": req.get("source", "unkown"),
             },
         )
-        self._access_logger.log_query_access(req)
-        is_streaming = self._frontend_worker.is_streaming(req)
-        if await raw_request.is_disconnected():
-            raise asyncio.CancelledError("client disconnects")
-        res = await self._call_generate_with_report(generate_call, is_streaming)
-
-        if is_streaming:
-            return StreamingResponse(
-                self.stream_response(req, res), media_type="text/event-stream"
-            )
-        async for x in res:
+        # Chunk-level end-to-end for the prompt_batch mode of this entry.
+        # Reported only on success so failed (usually fast) chunks do not drag
+        # the RT distribution down; failures are counted by error_qps instead.
+        batch_prompts = req.get("prompt_batch")
+        is_batch = isinstance(batch_prompts, list)
+        begin_time = current_time_ms() if is_batch else 0
+        try:
+            self._access_logger.log_query_access(req)
+            is_streaming = self._frontend_worker.is_streaming(req)
             if await raw_request.is_disconnected():
-                # Abort the request if the client disconnects.
-                await res.aclose()
                 raise asyncio.CancelledError("client disconnects")
+            res = await self._call_generate_with_report(generate_call, is_streaming)
 
-        complete_response = await self._collect_complete_response_and_record_access_log(
-            req, res
-        )
-        return ORJSONResponse(content=complete_response)
+            if is_streaming:
+                return StreamingResponse(
+                    self.stream_response(
+                        req,
+                        res,
+                        batch_begin_time=begin_time if is_batch else None,
+                        batch_prompt_count=len(batch_prompts) if is_batch else 0,
+                    ),
+                    media_type="text/event-stream",
+                )
+            async for x in res:
+                if await raw_request.is_disconnected():
+                    # Abort the request if the client disconnects.
+                    await res.aclose()
+                    raise asyncio.CancelledError("client disconnects")
+
+            complete_response = (
+                await self._collect_complete_response_and_record_access_log(req, res)
+            )
+            if is_batch:
+                self._report_batch_chunk(begin_time, len(batch_prompts))
+            return ORJSONResponse(content=complete_response)
+        except BaseException:
+            if is_batch:
+                self._report_batch_chunk_error()
+            raise
 
     def tokenize(self, req: str | Dict[str, Any]):
         try:
