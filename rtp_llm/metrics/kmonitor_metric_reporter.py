@@ -33,6 +33,10 @@ class AccMetrics(Enum):
     UPDATE_QPS_METRIC = "py_rtp_update_qps_metric"
     ERROR_UPDATE_QPS_METRIC = "py_rtp_error_update_target_qps"
 
+    # batch_infer (/dispatcher chunk entry): one unit is one chunk, not one prompt.
+    BATCH_INFER_QPS_METRIC = "ft_batch_infer_qps"
+    BATCH_INFER_ERROR_QPS_METRIC = "ft_batch_infer_error_qps"
+
     # worker_status
     WORKER_STATUS_QPS_METRIC = "py_rtp_worker_status_qps"
     CACHE_STATUS_QPS_METRIC = "py_rtp_cache_status_qps"
@@ -172,11 +176,14 @@ class GaugeMetrics(Enum):
     VIT_EMBEDDING_CACHE_BYTES_METRIC = "py_rtp_vit_embedding_cache_bytes"
 
     # batch_infer (the /dispatcher chunk entry point) bypasses generate_stream,
-    # so it historically emitted no pipeline timing at all. These two cover the
-    # same spans as ft_pre_pipeline_rt / ft_post_pipeline_rt for that path:
-    # pre = tokenize + input build, total = entry to decoded response.
+    # so it historically emitted no pipeline timing at all. pre_rt covers
+    # config + tokenize + input build (reported even when enqueue fails), e2e_rt
+    # covers handler entry to serialized response (success only). They are not a
+    # pair of pipeline stages: e2e_rt - pre_rt is worker post-processing plus
+    # serialization.
     BATCH_INFER_PRE_RT_METRIC = "ft_batch_infer_pre_rt"
-    BATCH_INFER_RT_METRIC = "ft_batch_infer_rt"
+    BATCH_INFER_E2E_RT_METRIC = "ft_batch_infer_e2e_rt"
+    BATCH_INFER_PROMPT_COUNT_METRIC = "ft_batch_infer_prompt_count"
 
     # CPython GC pauses, reported once per second by a background thread. Tagged
     # by generation so a gen2 stop-the-world pause that eats the 150ms budget is
