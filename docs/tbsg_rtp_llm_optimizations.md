@@ -48,4 +48,23 @@
 
 ## 3. 部署与运维优化
 
-暂无。
+### 3.1 /batch_infer 的 chunk 级 FE 指标（batch_infer chunk-level metrics）
+
+- **功能简介**：为前端 `/batch_infer` 入口补充 chunk 级可观测性，直接回答“一个 batch_infer chunk 的端到端 RT 是多少、前处理占多少、每 chunk 带多少 prompt、成功/失败速率”。指标均为 FE 侧采集、经 KMonitor 上报，与引擎侧 `py_rtp_*` / `ft_*` 指标并列，不改变推理行为。
+- **指标清单**（定义见 [kmonitor_metric_reporter.py](../rtp_llm/metrics/kmonitor_metric_reporter.py)，`AccMetrics` / `GaugeMetrics`）：
+  - `ft_batch_infer_e2e_rt`（Gauge，ms）：**batch RT 本体**。`/batch_infer` handler 入口 → `ORJSONResponse` 成功构造完成，**不含 socket 写回**；仅统计成功的 chunk。
+  - `ft_batch_infer_pre_rt`（Gauge，ms）：其中“前处理段”——`Pipeline.batch_infer` 入口 → `batch_enqueue` 之前（build config + tokenize + 组装 inputs）。恒有 `pre_rt ≤ e2e_rt`。
+  - `ft_batch_infer_prompt_count`（Gauge）：每个成功 chunk 携带的 prompt 数。
+  - `ft_batch_infer_qps`（Acc）：每个成功 chunk 计 1，tags `rank_id` / `server_id`。
+  - `ft_batch_infer_error_qps`（Acc）：`except BaseException` 中每个失败 chunk 计 1，tags 同上；失败 chunk 不计入 RT / prompt_count / qps。
+- **代码目录**：
+  - 指标定义：[kmonitor_metric_reporter.py](../rtp_llm/metrics/kmonitor_metric_reporter.py)（`BATCH_INFER_QPS_METRIC`、`BATCH_INFER_ERROR_QPS_METRIC`、`BATCH_INFER_PRE_RT_METRIC`、`BATCH_INFER_E2E_RT_METRIC`、`BATCH_INFER_PROMPT_COUNT_METRIC`）
+  - 计时与上报：[pipeline.py](../rtp_llm/pipeline/pipeline.py)（`batch_infer` 入口取 `begin_time`，`batch_enqueue` 前上报 `pre_rt`）、[frontend_server.py](../rtp_llm/frontend/frontend_server.py)（`_report_batch_chunk` / `_report_batch_chunk_error`，成功路径构造 response 后、异常路径 re-raise 前上报）
+  - 改动规模：3 个文件，约 +40 / −1 行（commit `709762085`）
+- **查询方式与口径注意**：
+  - KMon PromQL 直接按 `hippo_app="whale_prod_<service>"` 过滤，如 `max(ft_batch_infer_e2e_rt{hippo_app="whale_prod_qwen3_06B_testing_49641_clone_reuse_in_batch"})`。
+  - `whale service metric` 的指标目录带服务标签白名单，暂不包含这 5 个名字；需要走 KMon API/大盘直接查。
+  - Gauge 有约 1 分钟的上报/落库延迟，发完请求立刻查可能为空。
+  - `ft_batch_infer_qps` 用 1s 步长的 `avg` 会被零值摊薄（低频流量下显示 0），看瞬时速率用 `max`/`sum`。
+- **验证（2026-11-23，`qwen3_06B_testing_49641_clone_reuse_in_batch` / `ea119_PPU_ZW610E`，镜像 `rtp_llm_ppu:0.2.0_0.2.0_2026_11_23_15_02_6fefa6b16`）**：直连 pod 发 2 次 `POST /batch_infer`（每次 20 prompt、`max_new_tokens=1`），均 HTTP 200。KMon 实测：`ft_batch_infer_e2e_rt` 26.84 ms、`ft_batch_infer_pre_rt` 2.47 ms（满足 `pre_rt ≤ e2e_rt`）、`ft_batch_infer_prompt_count` 20、`ft_batch_infer_qps` max ≈ 2、`ft_batch_infer_error_qps` 0。
+
