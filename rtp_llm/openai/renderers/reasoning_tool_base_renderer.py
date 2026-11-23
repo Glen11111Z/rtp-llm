@@ -162,24 +162,39 @@ class ReasoningToolBaseRenderer(CustomChatRenderer, ABC):
         ):
             context.update(request.extra_configs.chat_template_kwargs)
 
-        # 创建Jinja2环境
+        try:
+            template = self._get_compiled_template()
+            rendered_prompt = template.render(**context)
+            return rendered_prompt
+        except Exception as e:
+            logging.error(f"构建提示文本失败: {str(e)}")
+            raise ValueError(f"Error rendering prompt template: {str(e)}")
+
+    def _get_compiled_template(self):
+        """Compile the chat template once per renderer instance and reuse it.
+
+        Rebuilding the Jinja2 Environment and recompiling the template on every
+        request costs ~10ms per call for large chat templates and blocks the
+        frontend event loop at high QPS. The template is immutable for a
+        renderer instance, so compile lazily on first use and cache it, keyed by
+        the template source to stay correct if `chat_template` is ever swapped.
+        """
+        src = self.chat_template
+        cached = getattr(self, "_compiled_template", None)
+        if cached is not None and getattr(self, "_compiled_template_src", None) == src:
+            return cached
         env = Environment(
             loader=BaseLoader(),
             trim_blocks=True,
             lstrip_blocks=True,
             extensions=["jinja2.ext.do", "jinja2.ext.loopcontrols"],
         )
-
-        # 允许子类自定义环境
+        # 允许子类自定义环境（tojson / smart_items 等过滤器）
         self._customize_jinja_env(env)
-
-        try:
-            template = env.from_string(self.chat_template)
-            rendered_prompt = template.render(**context)
-            return rendered_prompt
-        except Exception as e:
-            logging.error(f"构建提示文本失败: {str(e)}")
-            raise ValueError(f"Error rendering prompt template: {str(e)}")
+        template = env.from_string(src)
+        self._compiled_template = template
+        self._compiled_template_src = src
+        return template
 
     def _preprocess_messages(self, messages: List[dict]) -> List[dict]:
         """
