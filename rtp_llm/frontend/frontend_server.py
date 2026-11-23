@@ -562,9 +562,31 @@ class FrontendServer(object):
             CURRENT_TRACE_STATE.set(previous_trace_state)
             self._global_controller.decrement()
 
+    def _report_batch_chunk(self, begin_time_ms: int, prompt_count: int):
+        kmonitor.report(
+            GaugeMetrics.BATCH_INFER_E2E_RT_METRIC,
+            current_time_ms() - begin_time_ms,
+        )
+        kmonitor.report(
+            GaugeMetrics.BATCH_INFER_PROMPT_COUNT_METRIC, prompt_count
+        )
+        kmonitor.report(
+            AccMetrics.BATCH_INFER_QPS_METRIC,
+            1,
+            {"rank_id": self.rank_id, "server_id": self.server_id},
+        )
+
+    def _report_batch_chunk_error(self):
+        kmonitor.report(
+            AccMetrics.BATCH_INFER_ERROR_QPS_METRIC,
+            1,
+            {"rank_id": self.rank_id, "server_id": self.server_id},
+        )
+
     async def batch_infer(self, req: dict, raw_request: Request):
         from rtp_llm.frontend.frontend_worker import BatchPipelineResponse
 
+        begin_time = current_time_ms()
         # Concurrency accounting: a batch counts as ONE scheduling unit because the engine
         # atomically enqueues all prompts via BatchGenerateCall. Per-item counting would over-
         # reject under the same concurrency_limit; the trade-off is that a large batch occupies
@@ -603,8 +625,11 @@ class FrontendServer(object):
                 request_id=request_id,
                 generate_config=generate_config,
             )
-            return ORJSONResponse(content=result.model_dump(exclude_none=True))
+            response = ORJSONResponse(content=result.model_dump(exclude_none=True))
+            self._report_batch_chunk(begin_time, len(prompts))
+            return response
         except BaseException as error:
+            self._report_batch_chunk_error()
             if trace_state is not None:
                 _record_http_status(trace_state, 500)
                 trace_state.finish(

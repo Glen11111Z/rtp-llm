@@ -82,6 +82,10 @@ class AccMetrics(Enum):
     VIT_EMBEDDING_CACHE_INFLIGHT_QPS_METRIC = "py_rtp_vit_embedding_cache_inflight_qps"
     VIT_EMBEDDING_CACHE_EVICTION_QPS_METRIC = "py_rtp_vit_embedding_cache_eviction_qps"
 
+    # /batch_infer chunk-level counters (one unit = one sub-batch)
+    BATCH_INFER_QPS_METRIC = "ft_batch_infer_qps"
+    BATCH_INFER_ERROR_QPS_METRIC = "ft_batch_infer_error_qps"
+
 
 class GaugeMetrics(Enum):
     RESPONSE_FIRST_TOKEN_RT_METRIC = "py_rtp_response_first_token_rt"
@@ -93,6 +97,11 @@ class GaugeMetrics(Enum):
     INPUT_TOKEN_SIZE_METRIC = "ft_input_token_length"
     OUTPUT_TOKEN_SIZE_METRIC = "ft_output_token_length"
     PRE_PIPELINE_RT_METRIC = "ft_pre_pipeline_rt"
+    # /batch_infer chunk-level: pre = tokenize/build inputs, e2e = handler
+    # entry to response object ready; both only cover the FE handler.
+    BATCH_INFER_PRE_RT_METRIC = "ft_batch_infer_pre_rt"
+    BATCH_INFER_E2E_RT_METRIC = "ft_batch_infer_e2e_rt"
+    BATCH_INFER_PROMPT_COUNT_METRIC = "ft_batch_infer_prompt_count"
     POST_PIPELINE_RT_METRIC = "ft_post_pipeline_rt"
     NUM_BEAMS_METRIC = "ft_num_beams"
 
