@@ -14,7 +14,7 @@
   - **拓扑**：所有 GroupSet 均为 `FULL`。含 SWA/Linear 的混合拓扑下自动失效（`match` 把 epoch 降级为 0、注册分支 warn-once 跳过），因为任意尾段无法叠加到非全前缀组上。
   - **调度器**：仅 `FIFOScheduler` 产生正 epoch（`nextBatchEpoch()` 返回 `++batch_epoch_counter_`）；`FIFOSchedulerBase` 默认返回 0，故 `BatchDecodeScheduler`、`PDFusionRatioScheduler` 等不生效。epoch 只在**首次准入**时下发（`!hasEvent(CanRun)`），已准入流保留原 epoch。
   - **请求**：`reuseCache()` 为真、存在 cache manager、`curBlocksNum() > 0`、`batchEpoch() > 0`；`epoch <= 0` 时注册被拒绝并告警，防止批内数据按 epoch 0 提升进全局。
-  - **负载前提（决定是否有收益）**：同一调度轮内准入 ≥2 个请求，**且**公共前缀 token 数 ≥ `SEQ_SIZE_PER_BLOCK`（默认 64）。典型满足：RAG 同文档多问、共享长 system prompt 的多路采样、会话树状分叉、批量评测同一 prompt 变体。典型不满足：同主题不同实体的在线流量（实测共享前缀仅 4–17 token，凑不满一个块，命中恒为 0）。
+  - **负载前提（决定是否有收益）**：同一调度轮内准入 ≥2 个请求，**且**公共前缀 token 数 ≥ `SEQ_SIZE_PER_BLOCK`（默认 64）。典型满足：RAG 同文档多问、共享长 system prompt 的多路采样、会话树状分叉、批量评测同一 prompt 变体。典型不满足：同主题不同实体的在线流量（共享前缀常不足一个块，命中为 0）。
   - **明确不支持（v1 边界）**：跨调度轮/跨 batch 复用；私有条目向 HOST/DISK/Remote 导出；`epoch>0` 时从低层加载全局段；原子提交/回滚接口（`commitEpoch`）；生产者失败时的跨请求数值回滚。
 - **代码目录**：
   - 私有注册表（新增）：[BatchPrivateBlockRegistry.h](../rtp_llm/cpp/cache/block_tree_cache/batch_private/BatchPrivateBlockRegistry.h)、[BatchPrivateBlockRegistry.cc](../rtp_llm/cpp/cache/block_tree_cache/batch_private/BatchPrivateBlockRegistry.cc)
@@ -32,15 +32,31 @@
 - **可观测性与判停**：`RtpLLMCacheReuseMetrics` 组新增 5 个 gauge——`batch_private_registered_blocks`、`batch_private_matched_blocks`、`batch_private_reclaimed_blocks`、`batch_private_active_epochs`、`batch_private_match_cost_us`；另有 `CacheStats::batch_private_entries` 与调试接口 `dumpBatchPrivate()`（仅日志输出 epoch/owner/条目数）。判停标准（任一成立即关闭并复盘）：`matched_blocks` 长期为 0 → 负载不满足前提，功能无效；`reclaimed_blocks` 持续非零 → 容量兜底被触发，4096 上限偏小或注销不及时；`active_epochs` 不随批次结束归零 → 注销路径泄漏；输出一致性抽检出现差异 → 立即关闭并排查 backend 写读序。
 - **验证**：
   - **单测（已交付）**：`BatchPrivateBlockRegistryTest` 10 例，CPU 可跑，覆盖注册与同 epoch 命中、空/尺寸不符/块不完整的拒绝、同 owner 重注册幂等、第二 owner 共享条目至最后一次 drop、跨 epoch key 跳过、未知 owner 返回 0、`reapStaleEpochs` 回收、`reclaimToLimit` 淘汰最旧且**最新 epoch 永不淘汰**、`dump` 对空表/活表安全；并验证单块引用轨迹 `malloc → 请求 incRef(1) → 注册(2) → 兄弟匹配(3) → 生产者释放(2) → 注销(1) → 兄弟释放(0)`。执行：`bazel test //rtp_llm/cpp/cache/block_tree_cache/test:batch_private_block_registry_test`。
-  - **GPU 实测（已完成，`catering_retail_qwen3_06B`，base `7cdc403` vs test1b 开启本优化）**：数值一致性——黄金集开关开/关输出逐 token 一致；轻载压测——QPS=5 × 60s × 301 请求，两构建成功率均 100%，TTFT 13.79ms vs 13.59ms、整请求 cost 75.37ms vs 75.52ms、复用率均 0.818，差异全在噪声内（<0.3ms），**无回归**；真实 batch 形态——用线上日志重建 dispatcher batch 冷启动回放，**批内私有命中全部为 0**，原因是同批共享前缀仅 5–23 字符（约 4–17 token）不足一个 64-token 块；调小块到 `SEQ_SIZE_PER_BLOCK=16` 后命中条数 2.9%→26.5%，但整体复用率仅 2.5%→3.5%，RT 无可测收益。附带结论：块=16 是全局复用的甜点（复用率 0.863、TTFT 最低 12.97ms），块=8 收益不再涨而 TTFT 反弹。
-  - **验证缺口（待补）**：匹配叠加层单测（全局+私有拼接、`start_index`、device-only 不建 `async_context`、CP 分片）、`CoordinatorCacheManager` 插入分支单测、`FIFOScheduler` epoch 接线回归单测、`GenerateStateMachine` 三处注册时机单测、`StreamCacheResource`/`prefixCopy` 单测均未交付；Lazy Filling 写读序**未按 Attention backend 建立允许清单**（一致性测试通过属"未观察到失败"，非"已证明安全"）；生产者 forward 中途失败的注入测试未做；24h 浸泡未做（现有压测仅 60s，注册表长期稳定性未验证）。
+  - **实测（已完成）**：数值一致性——黄金集开关开/关输出逐 token 一致；轻载压测——两构建成功率无差异，TTFT 与整请求 cost 差异在噪声内，**无回归**；真实 batch 形态——用线上日志重建调度批冷启动回放，**批内私有命中为 0**，原因是同批共享前缀不足一个块；调小 `SEQ_SIZE_PER_BLOCK` 后命中率上升，但整体复用率与 RT 无可测收益。附带结论：较小的块对全局复用更友好，收益不随块继续变小而增长。
+  - **验证缺口（待补）**：匹配叠加层单测（全局+私有拼接、`start_index`、device-only 不建 `async_context`、CP 分片）、`CoordinatorCacheManager` 插入分支单测、`FIFOScheduler` epoch 接线回归单测、`GenerateStateMachine` 三处注册时机单测、`StreamCacheResource`/`prefixCopy` 单测均未交付；Lazy Filling 写读序**未按 Attention backend 建立允许清单**（一致性测试通过属"未观察到失败"，非"已证明安全"）；生产者 forward 中途失败的注入测试未做；长时间浸泡未做（现有压测时长较短，注册表长期稳定性未验证）。
 - **已知边界与风险**：
-  - **收益强依赖负载形态**：对纯全局树是弱占优（复用长度只增不减），但公共前缀已在全局树 device-ready、或不足一个 block、或批内仅单请求时收益为 0。当前餐饮零售在线流量属此类，**建议保持默认关闭**，待切换到长公共前缀 + 同轮高并发的流量再评估。
+  - **收益强依赖负载形态**：对纯全局树是弱占优（复用长度只增不减），但公共前缀已在全局树 device-ready、或不足一个 block、或批内仅单请求时收益为 0。当前线上流量多属此类，**建议保持默认关闭**，待切换到长公共前缀 + 同轮高并发的流量再评估。
   - **数值正确性边界**：生产者中途失败时，兄弟已绑定的块因持有独立请求引用不会 use-after-free，但读到的可能是未写完的 KV。当前只保证不崩溃，不做跨请求数值回滚（与旧实现同一边界）。
   - **decode 流也会注册**：三处注册点中第三处（`incrKVBlock` 之后）不做 role 门控，故 decode 流（含 PD fallback 后的 PREFILL 流）同样注册。影响有限——epoch 停在准入轮，只对同 epoch 兄弟可见，而这些兄弟通常已结束；未做专项验证。
   - **回收存活 epoch 是安全的**：`reapStaleEpochs` 可能删掉 owner 仍存活的旧 epoch 条目（如长寿命 decode 流）。注册表只释放自己那一份引用，owner 的请求引用仍在，块不会被回收；owner 后续注销找不到条目返回 0（幂等），损失的只是本已无意义的批内可见性。
   - **热路径开销**：开启后每次 `malloc` 多一段 O(私有复用长度) 的哈希查找（在既有 cache 锁内），注册路径多一次 O(条目数) 的回收扫描；`batch_private_match_cost_us` 可直接观测。关闭时零开销。
 - **设计文档**：《批内前缀复用迁移可行性分析》（三代 key 演进、cherry-pick 不可行实证、方案对比与风险评估）与《批内前缀复用落地实施方案》（as-built：总体设计、分阶段实施、接口清单、测试矩阵、风险、灰度判停、设计取舍 FAQ、实测报告索引）。两份为内部文档，当前未随本分支提交。
+
+### 1.2 chat 前端模板编译缓存（chat template compile cache）
+
+- **优化功能简介**：chat completions 前端渲染 prompt 时，原实现**每个请求**都新建 Jinja2 `Environment` 并从模板源编译一次 chat template。大模板（Qwen 系等）单次编译开销明显高于渲染本身，且在前端事件循环内串行执行，成为高并发下的吞吐上限与 RT 拐点来源。优化把编译产物缓存在 renderer 实例内：首次请求懒编译，之后只执行 `template.render(...)`，渲染语义与输出均不变。
+- **实现要点**：
+  - `_build_prompt()` 改为调用新增的 `_get_compiled_template()` 获取模板后再渲染；异常包装范围与原实现一致。
+  - `_get_compiled_template()` 以 `self.chat_template` 源串为 key（`_compiled_template_src`）：命中则直接返回 `_compiled_template`；未命中时创建 `Environment`、应用 `_customize_jinja_env`、`from_string` 编译后缓存。
+  - `Environment` 参数、子类环境定制钩子、渲染上下文均未改变；`chat_template` 若被替换会按源串自动重编译。
+- **正确性边界**：
+  - 只缓存编译产物，渲染输出与逐请求编译一致；
+  - 编译后模板的 `render` 为只读操作，跨请求复用不改变线程模型；
+  - 仅作用于经过 renderer 的入口（如 OpenAI chat completions），不经过 renderer 的入口不受影响；
+  - 首个请求仍支付一次编译成本；模板越大、QPS 越高，收益越明显。
+- **代码目录**：[reasoning_tool_base_renderer.py](../rtp_llm/openai/renderers/reasoning_tool_base_renderer.py)（`_build_prompt` / `_get_compiled_template`）；commit `a1c084099`。
+- **执行与启用**：无开关，默认生效；回滚直接 revert 对应 commit，无配置与数据结构变更。
+- **验证**：已通过压测与线上验证——高并发下前端 RT 不再出现阶跃，吞吐随并发近线性增长，进程稳定无异常重启；渲染结果与修复前一致。
 
 ## 2. 模型优化
 
@@ -50,7 +66,7 @@
 
 ### 3.1 /batch_infer 的 chunk 级 FE 指标（batch_infer chunk-level metrics）
 
-- **功能简介**：为前端 `/batch_infer` 入口补充 chunk 级可观测性，直接回答“一个 batch_infer chunk 的端到端 RT 是多少、前处理占多少、每 chunk 带多少 prompt、成功/失败速率”。指标均为 FE 侧采集、经 KMonitor 上报，与引擎侧 `py_rtp_*` / `ft_*` 指标并列，不改变推理行为。
+- **功能简介**：为前端 `/batch_infer` 入口补充 chunk 级可观测性，直接回答“一个 batch_infer chunk 的端到端 RT 是多少、前处理占多少、每 chunk 带多少 prompt、成功/失败速率”。指标均为 FE 侧采集、经监控系统上报，与引擎侧 `py_rtp_*` / `ft_*` 指标并列，不改变推理行为。
 - **指标清单**（定义见 [kmonitor_metric_reporter.py](../rtp_llm/metrics/kmonitor_metric_reporter.py)，`AccMetrics` / `GaugeMetrics`）：
   - `ft_batch_infer_e2e_rt`（Gauge，ms）：**batch RT 本体**。`/batch_infer` handler 入口 → `ORJSONResponse` 成功构造完成，**不含 socket 写回**；仅统计成功的 chunk。
   - `ft_batch_infer_pre_rt`（Gauge，ms）：其中“前处理段”——`Pipeline.batch_infer` 入口 → `batch_enqueue` 之前（build config + tokenize + 组装 inputs）。恒有 `pre_rt ≤ e2e_rt`。
@@ -62,9 +78,9 @@
   - 计时与上报：[pipeline.py](../rtp_llm/pipeline/pipeline.py)（`batch_infer` 入口取 `begin_time`，`batch_enqueue` 前上报 `pre_rt`）、[frontend_server.py](../rtp_llm/frontend/frontend_server.py)（`_report_batch_chunk` / `_report_batch_chunk_error`，成功路径构造 response 后、异常路径 re-raise 前上报）
   - 改动规模：3 个文件，约 +40 / −1 行（commit `709762085`）
 - **查询方式与口径注意**：
-  - KMon PromQL 直接按 `hippo_app="whale_prod_<service>"` 过滤，如 `max(ft_batch_infer_e2e_rt{hippo_app="whale_prod_qwen3_06B_testing_49641_clone_reuse_in_batch"})`。
-  - `whale service metric` 的指标目录带服务标签白名单，暂不包含这 5 个名字；需要走 KMon API/大盘直接查。
+  - 监控侧 PromQL 可按服务维度的 app 标签过滤。
+  - 平台指标查询工具的指标目录带服务标签白名单，暂不包含这 5 个名字；需要走监控 API/大盘直接查。
   - Gauge 有约 1 分钟的上报/落库延迟，发完请求立刻查可能为空。
   - `ft_batch_infer_qps` 用 1s 步长的 `avg` 会被零值摊薄（低频流量下显示 0），看瞬时速率用 `max`/`sum`。
-- **验证（2026-11-23，`qwen3_06B_testing_49641_clone_reuse_in_batch` / `ea119_PPU_ZW610E`，镜像 `rtp_llm_ppu:0.2.0_0.2.0_2026_11_23_15_02_6fefa6b16`）**：直连 pod 发 2 次 `POST /batch_infer`（每次 20 prompt、`max_new_tokens=1`），均 HTTP 200。KMon 实测：`ft_batch_infer_e2e_rt` 26.84 ms、`ft_batch_infer_pre_rt` 2.47 ms（满足 `pre_rt ≤ e2e_rt`）、`ft_batch_infer_prompt_count` 20、`ft_batch_infer_qps` max ≈ 2、`ft_batch_infer_error_qps` 0。
+- **验证（已完成）**：直连 `POST /batch_infer` 发送批量请求，均返回 HTTP 200；监控侧五个指标正常上报，`ft_batch_infer_e2e_rt` 不小于 `ft_batch_infer_pre_rt`（满足 `pre_rt ≤ e2e_rt`），`prompt_count` 与请求批量一致，`error_qps` 为 0。
 
