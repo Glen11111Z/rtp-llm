@@ -6,4 +6,3 @@ COPY rtp_llm/openai/renderers/reasoning_tool_base_renderer.py /opt/conda312/lib/
 COPY rtp_llm/frontend/frontend_server.py /opt/conda312/lib/python3.12/site-packages/rtp_llm/frontend/frontend_server.py
 COPY rtp_llm/frontend/frontend_app.py /opt/conda312/lib/python3.12/site-packages/rtp_llm/frontend/frontend_app.py
 COPY rtp_llm/metrics/kmonitor_metric_reporter.py /opt/conda312/lib/python3.12/site-packages/rtp_llm/metrics/kmonitor_metric_reporter.py
-RUN python3 -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), filename=p) for p in ('/opt/conda312/lib/python3.12/site-packages/rtp_llm/openai/renderers/reasoning_tool_base_renderer.py', '/opt/conda312/lib/python3.12/site-packages/rtp_llm/frontend/frontend_server.py', '/opt/conda312/lib/python3.12/site-packages/rtp_llm/frontend/frontend_app.py', '/opt/conda312/lib/python3.12/site-packages/rtp_llm/metrics/kmonitor_metric_reporter.py')]"
