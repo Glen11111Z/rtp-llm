@@ -92,6 +92,8 @@ class GaugeMetrics(Enum):
     RESPONSE_ITER_RT_METRIC = "py_rtp_response_iterate_rt"
     RESPONSE_ITERATE_COUNT = "py_rtp_response_iterate_count"
     LANTENCY_METRIC = "py_rtp_framework_rt"
+    PRE_FRAMEWORK_RT_METRIC = "py_rtp_pre_framework_rt"
+    POST_FRAMEWORK_RT_METRIC = "py_rtp_post_framework_rt"
 
     FT_ITERATE_COUNT_METRIC = "ft_iterate_count"
     INPUT_TOKEN_SIZE_METRIC = "ft_input_token_length"

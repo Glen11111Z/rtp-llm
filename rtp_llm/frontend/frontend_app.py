@@ -34,7 +34,7 @@ from rtp_llm.distribute.distributed_server import (
     get_eplb_stage_root_addresses,
 )
 from rtp_llm.embedding.embedding_type import TYPE_STR, EmbeddingType
-from rtp_llm.frontend.frontend_server import FrontendServer
+from rtp_llm.frontend.frontend_server import FrontendServer, TimingMiddleware
 from rtp_llm.frontend.shutdown_manager import FrontendShutdownManager
 from rtp_llm.metrics.event_loop_metrics import start_event_loop_lag_sampler
 from rtp_llm.metrics.gc_metrics import install_gc_metric_hook
@@ -550,6 +550,7 @@ class FrontendApp(object):
 
     def create_app(self):
         middleware = [
+            Middleware(TimingMiddleware),
             Middleware(
                 CORSMiddleware,
                 allow_origins=["*"],

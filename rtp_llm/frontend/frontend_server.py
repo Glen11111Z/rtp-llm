@@ -44,6 +44,140 @@ from rtp_llm.utils.time_util import current_time_ms
 from rtp_llm.utils.util import check_with_info
 
 USAGE_HEADER = "USAGE"
+TIMING_STATE_KEY = "rtp_request_timing"
+
+
+class RequestTiming:
+    """Per-request timestamps around py_rtp_framework_rt.
+
+    Uses perf_counter_ns so durations are monotonic even if the wall clock is
+    adjusted. All fields are optional because requests may fail or disconnect
+    before reaching the next boundary.
+    """
+
+    __slots__ = (
+        "t_asgi_start_ns",
+        "t_handler_entry_ns",
+        "t_py_start_ns",
+        "t_py_end_ns",
+        "t_handler_exit_ns",
+        "t_asgi_end_ns",
+        "streaming",
+        "cancelled",
+        "reported",
+        "rank_id",
+        "server_id",
+    )
+
+    def __init__(self) -> None:
+        self.t_asgi_start_ns = time.perf_counter_ns()
+        self.t_handler_entry_ns: Optional[int] = None
+        self.t_py_start_ns: Optional[int] = None
+        self.t_py_end_ns: Optional[int] = None
+        self.t_handler_exit_ns: Optional[int] = None
+        self.t_asgi_end_ns: Optional[int] = None
+        self.streaming: Optional[bool] = None
+        self.cancelled = False
+        self.reported = False
+        self.rank_id: Optional[str] = None
+        self.server_id: Optional[str] = None
+
+    def mark_handler_entry(self) -> None:
+        if self.t_handler_entry_ns is None:
+            self.t_handler_entry_ns = time.perf_counter_ns()
+
+
+def _get_timing_state(raw_request: Any) -> Optional[Dict[str, Any]]:
+    scope = getattr(raw_request, "scope", None)
+    if not isinstance(scope, dict):
+        return None
+    state = scope.get("state")
+    if not isinstance(state, dict):
+        state = {}
+        scope["state"] = state
+    return state
+
+
+def get_request_timing(raw_request: Any) -> Optional[RequestTiming]:
+    state = _get_timing_state(raw_request)
+    if state is None:
+        return None
+    timing = state.get(TIMING_STATE_KEY)
+    return timing if isinstance(timing, RequestTiming) else None
+
+
+def ensure_request_timing(raw_request: Any) -> Optional[RequestTiming]:
+    state = _get_timing_state(raw_request)
+    if state is None:
+        return None
+    timing = state.get(TIMING_STATE_KEY)
+    if isinstance(timing, RequestTiming):
+        return timing
+    timing = RequestTiming()
+    state[TIMING_STATE_KEY] = timing
+    return timing
+
+
+def report_request_timing(timing: Optional[RequestTiming]) -> None:
+    if timing is None or timing.reported:
+        return
+    timing.reported = True
+
+    # Without python_rt boundaries there is no meaningful pre/post split.
+    if timing.t_py_start_ns is None:
+        return
+
+    tags = {"streaming": "true" if timing.streaming else "false"}
+    if timing.rank_id is not None:
+        tags["rank_id"] = timing.rank_id
+    if timing.server_id is not None:
+        tags["server_id"] = timing.server_id
+    if timing.cancelled:
+        tags["cancelled"] = "true"
+
+    try:
+        pre_ms = (timing.t_py_start_ns - timing.t_asgi_start_ns) / 1_000_000.0
+        kmonitor.report(GaugeMetrics.PRE_FRAMEWORK_RT_METRIC, pre_ms, tags)
+        if timing.t_py_end_ns is not None and timing.t_asgi_end_ns is not None:
+            post_ms = (timing.t_asgi_end_ns - timing.t_py_end_ns) / 1_000_000.0
+            kmonitor.report(GaugeMetrics.POST_FRAMEWORK_RT_METRIC, post_ms, tags)
+    except Exception:
+        # Metrics must never affect request handling.
+        logging.debug("report request timing failed", exc_info=True)
+
+
+class TimingMiddleware:
+    """ASGI middleware that records the HTTP envelope around python_rt."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        state = scope.get("state")
+        if not isinstance(state, dict):
+            state = {}
+            scope["state"] = state
+        timing = RequestTiming()
+        state[TIMING_STATE_KEY] = timing
+
+        async def send_wrapper(message: Dict[str, Any]) -> None:
+            if message.get("type") == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                timing.t_asgi_end_ns = time.perf_counter_ns()
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except BaseException:
+            timing.cancelled = True
+            raise
+        finally:
+            report_request_timing(timing)
 
 
 def _field(value: Any, name: str) -> Any:
@@ -294,6 +428,7 @@ class FrontendServer(object):
         response: CompleteResponseAsyncGenerator,
         batch_begin_time: Optional[int] = None,
         batch_prompt_count: int = 0,
+        timing: Optional[RequestTiming] = None,
     ):
         # HTTP SERVER span owner for streaming requests: the four exits below
         # (success / cancel / error / finally) all funnel into the idempotent
@@ -311,6 +446,8 @@ class FrontendServer(object):
             await self._collect_complete_response_and_record_access_log(
                 request, response
             )
+            if timing is not None:
+                timing.t_handler_exit_ns = time.perf_counter_ns()
             if batch_begin_time is not None:
                 self._report_batch_chunk(batch_begin_time, batch_prompt_count)
             if trace_state is not None:
@@ -373,6 +510,11 @@ class FrontendServer(object):
             self._global_controller.decrement()
 
     async def inference(self, req: Union[str, Dict[Any, Any]], raw_request: RawRequest):
+        timing = ensure_request_timing(raw_request)
+        if timing is not None:
+            timing.mark_handler_entry()
+            timing.rank_id = self.rank_id
+            timing.server_id = self.server_id
         request_headers: Dict[str, str] = {}
         try:
             if isinstance(req, str):
@@ -435,6 +577,11 @@ class FrontendServer(object):
     async def chat_completion(
         self, request: ChatCompletionRequest, raw_request: Request
     ):
+        timing = ensure_request_timing(raw_request)
+        if timing is not None:
+            timing.mark_handler_entry()
+            timing.rank_id = self.rank_id
+            timing.server_id = self.server_id
         sequence = self._global_controller.increment() % 4096  # 12 bits
         request_id = generate_request_id(
             self.py_env_configs.server_config.ip,
@@ -706,6 +853,7 @@ class FrontendServer(object):
         self,
         generate_call: Callable[[], CompleteResponseAsyncGenerator],
         is_streaming: bool,
+        timing: Optional[RequestTiming] = None,
     ):
         # Captured here (request handler context) instead of inside the
         # generator: StreamingResponse may iterate it from another task whose
@@ -798,6 +946,8 @@ class FrontendServer(object):
                 iter_count += 1
                 yield response
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
+            if timing is not None:
+                timing.t_py_end_ns = time.perf_counter_ns()
             kmonitor.report(
                 GaugeMetrics.LANTENCY_METRIC, current_time_ms() - start_time
             )
@@ -811,6 +961,8 @@ class FrontendServer(object):
             )
 
         assert self._frontend_worker is not None
+        if timing is not None:
+            timing.t_py_start_ns = time.perf_counter_ns()
         start_time = current_time_ms()
         response_generator = generate_call()
         if inspect.isawaitable(response_generator):
@@ -845,6 +997,11 @@ class FrontendServer(object):
         generate_call: Callable[[], CompleteResponseAsyncGenerator],
     ):
         assert self._frontend_worker is not None
+        timing = ensure_request_timing(raw_request)
+        if timing is not None:
+            timing.mark_handler_entry()
+            timing.rank_id = self.rank_id
+            timing.server_id = self.server_id
         kmonitor.report(
             AccMetrics.QPS_METRIC,
             1,
@@ -863,9 +1020,13 @@ class FrontendServer(object):
         try:
             self._access_logger.log_query_access(req)
             is_streaming = self._frontend_worker.is_streaming(req)
+            if timing is not None:
+                timing.streaming = is_streaming
             if await raw_request.is_disconnected():
                 raise asyncio.CancelledError("client disconnects")
-            res = await self._call_generate_with_report(generate_call, is_streaming)
+            res = await self._call_generate_with_report(
+                generate_call, is_streaming, timing
+            )
 
             if is_streaming:
                 return StreamingResponse(
@@ -874,6 +1035,7 @@ class FrontendServer(object):
                         res,
                         batch_begin_time=begin_time if is_batch else None,
                         batch_prompt_count=len(batch_prompts) if is_batch else 0,
+                        timing=timing,
                     ),
                     media_type="text/event-stream",
                 )
@@ -886,6 +1048,8 @@ class FrontendServer(object):
             complete_response = (
                 await self._collect_complete_response_and_record_access_log(req, res)
             )
+            if timing is not None:
+                timing.t_handler_exit_ns = time.perf_counter_ns()
             if is_batch:
                 self._report_batch_chunk(begin_time, len(batch_prompts))
             return ORJSONResponse(content=complete_response)
