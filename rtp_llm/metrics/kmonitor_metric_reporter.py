@@ -94,6 +94,8 @@ class GaugeMetrics(Enum):
     LANTENCY_METRIC = "py_rtp_framework_rt"
     PRE_FRAMEWORK_RT_METRIC = "py_rtp_pre_framework_rt"
     POST_FRAMEWORK_RT_METRIC = "py_rtp_post_framework_rt"
+    RENDER_FRAMEWORK_RT_METRIC = "py_rtp_render_framework_rt"
+    SEND_FRAMEWORK_RT_METRIC = "py_rtp_send_framework_rt"
 
     FT_ITERATE_COUNT_METRIC = "ft_iterate_count"
     INPUT_TOKEN_SIZE_METRIC = "ft_input_token_length"

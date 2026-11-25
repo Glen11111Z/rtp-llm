@@ -70,6 +70,8 @@ class RequestTiming:
         "t_py_end_ns",
         "t_handler_exit_ns",
         "t_asgi_end_ns",
+        "t_resp_body_in_ns",
+        "t_resp_body_out_ns",
         "streaming",
         "cancelled",
         "reported",
@@ -87,6 +89,8 @@ class RequestTiming:
         self.t_py_end_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
         self.t_asgi_end_ns: Optional[int] = None
+        self.t_resp_body_in_ns: Optional[int] = None
+        self.t_resp_body_out_ns: Optional[int] = None
         self.streaming: Optional[bool] = None
         self.cancelled = False
         self.reported = False
@@ -152,6 +156,26 @@ def report_request_timing(timing: Optional[RequestTiming]) -> None:
         if timing.t_py_end_ns is not None and timing.t_asgi_end_ns is not None:
             post_ms = (timing.t_asgi_end_ns - timing.t_py_end_ns) / 1_000_000.0
             kmonitor.report(GaugeMetrics.POST_FRAMEWORK_RT_METRIC, post_ms, tags)
+        # Streaming responses send many bodies; first-to-last would span the
+        # whole stream, so these two gauges are only meaningful for one-shot
+        # responses.
+        if not timing.streaming and (
+            timing.t_handler_exit_ns is not None
+            and timing.t_resp_body_in_ns is not None
+            and timing.t_resp_body_in_ns >= timing.t_handler_exit_ns
+        ):
+            render_ms = (
+                timing.t_resp_body_in_ns - timing.t_handler_exit_ns
+            ) / 1_000_000.0
+            kmonitor.report(GaugeMetrics.RENDER_FRAMEWORK_RT_METRIC, render_ms, tags)
+        if not timing.streaming and (
+            timing.t_resp_body_in_ns is not None
+            and timing.t_resp_body_out_ns is not None
+        ):
+            send_ms = (
+                timing.t_resp_body_out_ns - timing.t_resp_body_in_ns
+            ) / 1_000_000.0
+            kmonitor.report(GaugeMetrics.SEND_FRAMEWORK_RT_METRIC, send_ms, tags)
     except Exception:
         # Metrics must never affect request handling.
         logging.debug("report request timing failed", exc_info=True)
@@ -179,10 +203,15 @@ class TimingMiddleware:
         state[TIMING_STATE_KEY] = timing
 
         async def send_wrapper(message: Dict[str, Any]) -> None:
-            if message.get("type") == "http.response.body" and not message.get(
-                "more_body", False
-            ):
-                timing.t_asgi_end_ns = time.perf_counter_ns()
+            if message.get("type") == "http.response.body":
+                body_in_ns = time.perf_counter_ns()
+                if timing.t_resp_body_in_ns is None:
+                    timing.t_resp_body_in_ns = body_in_ns
+                if not message.get("more_body", False):
+                    timing.t_asgi_end_ns = body_in_ns
+                await send(message)
+                timing.t_resp_body_out_ns = time.perf_counter_ns()
+                return
             await send(message)
 
         try:
