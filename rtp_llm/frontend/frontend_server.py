@@ -1050,6 +1050,32 @@ class FrontendServer(object):
             )
             if timing is not None:
                 timing.t_handler_exit_ns = time.perf_counter_ns()
+                aux_info = (
+                    complete_response.get("aux_info")
+                    if isinstance(complete_response, dict)
+                    else None
+                )
+                if isinstance(aux_info, dict) and timing.t_py_start_ns is not None:
+                    aux_info["fe_pre_rt_ms"] = round(
+                        (timing.t_py_start_ns - timing.t_asgi_start_ns) / 1_000_000.0,
+                        3,
+                    )
+                    if timing.t_handler_entry_ns is not None:
+                        aux_info["fe_handler_queue_ms"] = round(
+                            (timing.t_py_start_ns - timing.t_handler_entry_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if timing.t_py_end_ns is not None:
+                        aux_info["fe_py_rt_ms"] = round(
+                            (timing.t_py_end_ns - timing.t_py_start_ns) / 1_000_000.0,
+                            3,
+                        )
+                        aux_info["fe_tail_ms"] = round(
+                            (timing.t_handler_exit_ns - timing.t_py_end_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
             if is_batch:
                 self._report_batch_chunk(begin_time, len(batch_prompts))
             return ORJSONResponse(content=complete_response)
