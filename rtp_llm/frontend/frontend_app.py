@@ -35,6 +35,7 @@ from rtp_llm.distribute.distributed_server import (
 )
 from rtp_llm.embedding.embedding_type import TYPE_STR, EmbeddingType
 from rtp_llm.frontend.frontend_server import FrontendServer, TimingMiddleware
+from rtp_llm.frontend.http_timing import TimedHTTPProtocol
 from rtp_llm.frontend.shutdown_manager import FrontendShutdownManager
 from rtp_llm.metrics.event_loop_metrics import start_event_loop_lag_sampler
 from rtp_llm.metrics.gc_metrics import install_gc_metric_hook
@@ -501,6 +502,7 @@ class FrontendApp(object):
             app,
             fd=fd,
             loop=loop,
+            http=TimedHTTPProtocol,
             log_config=get_uvicorn_logging_config(),
             timeout_keep_alive=timeout_keep_alive,
             timeout_graceful_shutdown=(

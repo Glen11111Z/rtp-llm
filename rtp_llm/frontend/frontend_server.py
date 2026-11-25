@@ -18,6 +18,11 @@ from rtp_llm.config.model_config import (
     update_tokenizer_special_tokens,
 )
 from rtp_llm.frontend.frontend_worker import FrontendWorker, TokenizerEncodeResponse
+from rtp_llm.frontend.http_timing import (
+    SCOPE_ACCEPT_NS,
+    SCOPE_DATA_NS,
+    SCOPE_FIRST_REQ,
+)
 from rtp_llm.frontend.request_id_generator import generate_request_id
 from rtp_llm.metrics import AccMetrics, GaugeMetrics, kmonitor
 from rtp_llm.model_factory import ModelFactory
@@ -57,6 +62,9 @@ class RequestTiming:
 
     __slots__ = (
         "t_asgi_start_ns",
+        "t_data_ns",
+        "t_accept_ns",
+        "first_request",
         "t_handler_entry_ns",
         "t_py_start_ns",
         "t_py_end_ns",
@@ -71,6 +79,9 @@ class RequestTiming:
 
     def __init__(self) -> None:
         self.t_asgi_start_ns = time.perf_counter_ns()
+        self.t_data_ns: Optional[int] = None
+        self.t_accept_ns: Optional[int] = None
+        self.first_request = False
         self.t_handler_entry_ns: Optional[int] = None
         self.t_py_start_ns: Optional[int] = None
         self.t_py_end_ns: Optional[int] = None
@@ -162,6 +173,9 @@ class TimingMiddleware:
             state = {}
             scope["state"] = state
         timing = RequestTiming()
+        timing.t_data_ns = scope.get(SCOPE_DATA_NS)
+        timing.t_accept_ns = scope.get(SCOPE_ACCEPT_NS)
+        timing.first_request = bool(scope.get(SCOPE_FIRST_REQ))
         state[TIMING_STATE_KEY] = timing
 
         async def send_wrapper(message: Dict[str, Any]) -> None:
@@ -1060,6 +1074,20 @@ class FrontendServer(object):
                         (timing.t_py_start_ns - timing.t_asgi_start_ns) / 1_000_000.0,
                         3,
                     )
+                    if timing.t_data_ns is not None:
+                        aux_info["fe_hdr_rt_ms"] = round(
+                            (timing.t_asgi_start_ns - timing.t_data_ns) / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.first_request
+                        and timing.t_accept_ns is not None
+                        and timing.t_data_ns is not None
+                    ):
+                        aux_info["fe_conn_rt_ms"] = round(
+                            (timing.t_data_ns - timing.t_accept_ns) / 1_000_000.0,
+                            3,
+                        )
                     if timing.t_handler_entry_ns is not None:
                         aux_info["fe_handler_queue_ms"] = round(
                             (timing.t_py_start_ns - timing.t_handler_entry_ns)
