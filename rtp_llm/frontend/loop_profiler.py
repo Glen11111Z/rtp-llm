@@ -41,8 +41,8 @@ def _is_idle(frame) -> bool:
 
 
 def _leaf_key(frame) -> str:
-    while frame.f_back is not None:
-        frame = frame.f_back
+    # sys._current_frames() already returns the innermost frame; walking
+    # f_back would land on the module-level frame instead.
     code = frame.f_code
     return f"{code.co_filename.rsplit('/', 1)[-1]}:{code.co_name}:{frame.f_lineno}"
 
@@ -67,17 +67,11 @@ def _run() -> None:
         if frame is None:
             continue
         now = time.monotonic()
-        idle = _is_idle(_leaf_frame(frame))
+        idle = _is_idle(frame)
         _samples.append((now, "<idle>" if idle else _leaf_key(frame)))
         if now - last_summary >= _SUMMARY_REFRESH_S:
             last_summary = now
             _current = _summarize(now)
-
-
-def _leaf_frame(frame):
-    while frame.f_back is not None:
-        frame = frame.f_back
-    return frame
 
 
 def _summarize(now: float) -> Tuple[Optional[str], float, int]:
