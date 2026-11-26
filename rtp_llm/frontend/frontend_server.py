@@ -1279,7 +1279,6 @@ class FrontendServer(object):
                             post_total_ms - post_await_ms, 3
                         )
                         aux_info["fe_post_await_n"] = timing.t_post_await_n
-                    aux_info["fe_iters"] = iter_count
                     aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
