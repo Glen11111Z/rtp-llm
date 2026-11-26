@@ -81,6 +81,8 @@ class RequestTiming:
         "t_post_await_ns",
         "t_post_await_n",
         "t_iter_metric_ns",
+        "t_suspend_ns",
+        "t_suspended_ns",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -113,6 +115,8 @@ class RequestTiming:
         self.t_post_await_ns: int = 0
         self.t_post_await_n: int = 0
         self.t_iter_metric_ns: int = 0
+        self.t_suspend_ns: Optional[int] = None
+        self.t_suspended_ns: int = 0
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -1060,7 +1064,14 @@ class FrontendServer(object):
                 iter_count += 1
                 if is_first and timing is not None:
                     timing.t_first_outer_yield_ns = time.perf_counter_ns()
+                if timing is not None:
+                    timing.t_suspend_ns = time.perf_counter_ns()
                 yield response
+                if timing is not None and timing.t_suspend_ns is not None:
+                    timing.t_suspended_ns += (
+                        time.perf_counter_ns() - timing.t_suspend_ns
+                    )
+                    timing.t_suspend_ns = None
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
             if timing is not None:
                 timing.t_py_end_ns = time.perf_counter_ns()
@@ -1292,8 +1303,17 @@ class FrontendServer(object):
                         aux_info["fe_post_await_n"] = timing.t_post_await_n
                         post_metric_ms = timing.t_iter_metric_ns / 1_000_000.0
                         aux_info["fe_post_metric_ms"] = round(post_metric_ms, 3)
+                        suspended_ms = timing.t_suspended_ns / 1_000_000.0
+                        aux_info["fe_suspended_ms"] = round(suspended_ms, 3)
                         aux_info["fe_post_other_ms"] = round(
                             post_total_ms - post_await_ms - post_metric_ms, 3
+                        )
+                        aux_info["fe_post_body_ms"] = round(
+                            post_total_ms
+                            - post_await_ms
+                            - post_metric_ms
+                            - suspended_ms,
+                            3,
                         )
                     aux_info["fe_pid"] = os.getpid()
                     if (
