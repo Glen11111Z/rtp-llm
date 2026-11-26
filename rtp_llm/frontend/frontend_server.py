@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Union
@@ -76,6 +77,7 @@ class RequestTiming:
         "t_first_output_ns",
         "t_ping_rtt_ns",
         "t_ping_ts_ns",
+        "t_loop_turn_ns",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -104,6 +106,7 @@ class RequestTiming:
         self.t_first_output_ns: Optional[int] = None
         self.t_ping_rtt_ns: Optional[int] = None
         self.t_ping_ts_ns: Optional[int] = None
+        self.t_loop_turn_ns: Optional[int] = None
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -935,6 +938,12 @@ class FrontendServer(object):
             iter_count = 0
             if timing is not None:
                 CURRENT_REQUEST_TIMING.set(timing)
+                loop = asyncio.get_running_loop()
+                t_loop0 = time.perf_counter_ns()
+                loop_turn_fut = loop.create_future()
+                loop.call_soon(loop_turn_fut.set_result, None)
+                await loop_turn_fut
+                timing.t_loop_turn_ns = time.perf_counter_ns() - t_loop0
             response_iter = response_generator.__aiter__()
             while True:
                 is_first = first_response
@@ -1238,6 +1247,11 @@ class FrontendServer(object):
                             / 1_000_000.0,
                             1,
                         )
+                    if timing.t_loop_turn_ns is not None:
+                        aux_info["fe_loop_turn_ms"] = round(
+                            timing.t_loop_turn_ns / 1_000_000.0, 3
+                        )
+                    aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
                         and timing.t_first_backend_ns is not None
