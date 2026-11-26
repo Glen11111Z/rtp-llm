@@ -15,6 +15,7 @@ from rtp_llm.config.exceptions import ExceptionType, FtRuntimeException
 from rtp_llm.config.generate_config import ReturnAllProbsMode, RoleType
 from rtp_llm.config.py_config_modules import VitConfig
 from rtp_llm.config.response_format_compiler import validate_engine_ready
+from rtp_llm.frontend.http_timing import CURRENT_REQUEST_TIMING
 from rtp_llm.cpp.model_rpc.proto.model_rpc_service_pb2 import (
     BatchGenerateInputPB,
     ErrorCodePB,
@@ -1277,6 +1278,7 @@ class ModelRpcClient(object):
     async def enqueue(
         self, input_py: GenerateInput
     ) -> AsyncGenerator[GenerateOutputs, None]:
+        timing = CURRENT_REQUEST_TIMING.get()
         request_timeout_ms = input_py.generate_config.timeout_ms
         # Prefer per-request timeout; otherwise fall back to the server-side default
         # (pd_sep_config.max_rpc_timeout_ms). effective_ms <= 0 means no gRPC
@@ -1389,6 +1391,8 @@ class ModelRpcClient(object):
                 # observer uses the same absolute boundary, so time spent
                 # receiving application frames is included.
                 rpc_deadline = asyncio.get_running_loop().time() + effective_ms / 1000.0
+            if timing is not None:
+                timing.t_rpc_send_ns = time.perf_counter_ns()
             if use_fetch_response:
                 response_iterator = stub.FetchResponse(
                     FetchRequestPB(request_id=input_pb.request_id), **grpc_kwargs
@@ -1397,6 +1401,7 @@ class ModelRpcClient(object):
                 response_iterator = stub.GenerateStreamCall(input_pb, **grpc_kwargs)
             # 调用服务器方法并接收流式响应
             response_stream = response_iterator.__aiter__()
+            first_rpc_output = True
             while True:
                 if terminal_read_task is None:
                     response = await _read_rpc_response(response_stream)
@@ -1405,7 +1410,12 @@ class ModelRpcClient(object):
                     terminal_read_task = None
                 if response is None:
                     break
+                if first_rpc_output and timing is not None:
+                    timing.t_first_backend_ns = time.perf_counter_ns()
                 output_py = trans_output(input_py, response, stream_state)
+                if first_rpc_output and timing is not None:
+                    timing.t_first_output_ns = time.perf_counter_ns()
+                    first_rpc_output = False
                 last_output = output_py
                 if use_fetch_response and _is_finished_response(response):
                     terminal_seen = True

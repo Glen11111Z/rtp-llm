@@ -6,6 +6,7 @@ timestamp, so it remained an opaque residual. This protocol stamps those points 
 the values to the app through the ASGI scope.
 """
 
+import contextvars
 import time
 from typing import Any
 
@@ -15,6 +16,8 @@ from uvicorn.protocols.http.auto import AutoHTTPProtocol
 SCOPE_DATA_NS = "rtp_req_data_ns"
 SCOPE_ACCEPT_NS = "rtp_conn_accept_ns"
 SCOPE_FIRST_REQ = "rtp_first_request"
+
+CURRENT_REQUEST_TIMING = contextvars.ContextVar("rtp_request_timing", default=None)
 
 
 class TimedHTTPProtocol(AutoHTTPProtocol):

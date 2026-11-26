@@ -19,6 +19,7 @@ from rtp_llm.config.model_config import (
 )
 from rtp_llm.frontend.frontend_worker import FrontendWorker, TokenizerEncodeResponse
 from rtp_llm.frontend.http_timing import (
+    CURRENT_REQUEST_TIMING,
     SCOPE_ACCEPT_NS,
     SCOPE_DATA_NS,
     SCOPE_FIRST_REQ,
@@ -70,6 +71,9 @@ class RequestTiming:
         "t_py_end_ns",
         "t_rpc_start_ns",
         "t_rpc_end_ns",
+        "t_rpc_send_ns",
+        "t_first_backend_ns",
+        "t_first_output_ns",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -93,6 +97,9 @@ class RequestTiming:
         self.t_py_end_ns: Optional[int] = None
         self.t_rpc_start_ns: Optional[int] = None
         self.t_rpc_end_ns: Optional[int] = None
+        self.t_rpc_send_ns: Optional[int] = None
+        self.t_first_backend_ns: Optional[int] = None
+        self.t_first_output_ns: Optional[int] = None
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -922,6 +929,8 @@ class FrontendServer(object):
             last_observed_output_tokens = 0
             fallback_token_debt = 0
             iter_count = 0
+            if timing is not None:
+                CURRENT_REQUEST_TIMING.set(timing)
             response_iter = response_generator.__aiter__()
             while True:
                 is_first = first_response
@@ -1175,6 +1184,55 @@ class FrontendServer(object):
                     ):
                         aux_info["fe_sched_rt_ms"] = round(
                             (timing.t_first_resume_ns - timing.t_first_outer_yield_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_rpc_start_ns is not None
+                        and timing.t_py_start_ns is not None
+                    ):
+                        aux_info["fe_gen_setup_rt_ms"] = round(
+                            (timing.t_rpc_start_ns - timing.t_py_start_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_rpc_send_ns is not None
+                        and timing.t_rpc_start_ns is not None
+                    ):
+                        aux_info["fe_rpc_send_rt_ms"] = round(
+                            (timing.t_rpc_send_ns - timing.t_rpc_start_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_first_backend_ns is not None
+                        and timing.t_rpc_send_ns is not None
+                    ):
+                        backend_ms = (
+                            timing.t_first_backend_ns - timing.t_rpc_send_ns
+                        ) / 1_000_000.0
+                        aux_info["fe_rpc_backend_rt_ms"] = round(backend_ms, 3)
+                        cost = aux_info.get("cost_time")
+                        if isinstance(cost, (int, float)):
+                            aux_info["fe_backend_over_native_rt_ms"] = round(
+                                backend_ms - cost, 3
+                            )
+                    if (
+                        timing.t_first_output_ns is not None
+                        and timing.t_first_backend_ns is not None
+                    ):
+                        aux_info["fe_rpc_trans_rt_ms"] = round(
+                            (timing.t_first_output_ns - timing.t_first_backend_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_rpc_end_ns is not None
+                        and timing.t_first_output_ns is not None
+                    ):
+                        aux_info["fe_rpc_recv_rt_ms"] = round(
+                            (timing.t_rpc_end_ns - timing.t_first_output_ns)
                             / 1_000_000.0,
                             3,
                         )
