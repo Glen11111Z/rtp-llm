@@ -80,6 +80,7 @@ class RequestTiming:
         "t_loop_turn_ns",
         "t_post_await_ns",
         "t_post_await_n",
+        "t_iter_metric_ns",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -111,6 +112,7 @@ class RequestTiming:
         self.t_loop_turn_ns: Optional[int] = None
         self.t_post_await_ns: int = 0
         self.t_post_await_n: int = 0
+        self.t_iter_metric_ns: int = 0
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -979,10 +981,13 @@ class FrontendServer(object):
                         # from non-streaming requests, whose first response is
                         # already the complete body.
                         trace_state.add_event(trace_attrs.EVENT_FIRST_RESPONSE_CHUNK)
+                    _m0 = time.perf_counter_ns()
                     kmonitor.report(
                         GaugeMetrics.RESPONSE_FIRST_TOKEN_RT_METRIC,
                         end_time - last_iterate_time,
                     )
+                    if timing is not None:
+                        timing.t_iter_metric_ns += time.perf_counter_ns() - _m0
                 else:
                     step_output_len = 1
                     if hasattr(response, "aux_info"):
@@ -996,10 +1001,14 @@ class FrontendServer(object):
                                 step_output_len,
                             )
 
+                    _m0 = time.perf_counter_ns()
                     kmonitor.report(
                         GaugeMetrics.RESPONSE_ITER_RT_METRIC,
                         (end_time - last_iterate_time) / step_output_len,
                     )
+                    if timing is not None:
+                        timing.t_iter_metric_ns += time.perf_counter_ns() - _m0
+                _m0 = time.perf_counter_ns()
                 kmonitor.report(
                     AccMetrics.ITER_QPS_METRIC,
                     1,
@@ -1008,6 +1017,8 @@ class FrontendServer(object):
                         "server_id": self.server_id,
                     },
                 )
+                if timing is not None:
+                    timing.t_iter_metric_ns += time.perf_counter_ns() - _m0
                 if trace_state is not None and is_streaming:
                     try:
                         output_tokens = _output_token_total(response)
@@ -1279,6 +1290,11 @@ class FrontendServer(object):
                             post_total_ms - post_await_ms, 3
                         )
                         aux_info["fe_post_await_n"] = timing.t_post_await_n
+                        post_metric_ms = timing.t_iter_metric_ns / 1_000_000.0
+                        aux_info["fe_post_metric_ms"] = round(post_metric_ms, 3)
+                        aux_info["fe_post_other_ms"] = round(
+                            post_total_ms - post_await_ms - post_metric_ms, 3
+                        )
                     aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
