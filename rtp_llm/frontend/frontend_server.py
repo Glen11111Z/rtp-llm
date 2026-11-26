@@ -83,6 +83,8 @@ class RequestTiming:
         "t_iter_metric_ns",
         "t_suspend_ns",
         "t_suspended_ns",
+        "t_disc_ns",
+        "t_disc_n",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -117,6 +119,8 @@ class RequestTiming:
         self.t_iter_metric_ns: int = 0
         self.t_suspend_ns: Optional[int] = None
         self.t_suspended_ns: int = 0
+        self.t_disc_ns: int = 0
+        self.t_disc_n: int = 0
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -1169,7 +1173,12 @@ class FrontendServer(object):
             async for x in res:
                 if timing is not None and timing.t_first_resume_ns is None:
                     timing.t_first_resume_ns = time.perf_counter_ns()
-                if await raw_request.is_disconnected():
+                _disc0 = time.perf_counter_ns() if timing is not None else 0
+                _disconnected = await raw_request.is_disconnected()
+                if timing is not None:
+                    timing.t_disc_ns += time.perf_counter_ns() - _disc0
+                    timing.t_disc_n += 1
+                if _disconnected:
                     # Abort the request if the client disconnects.
                     await res.aclose()
                     raise asyncio.CancelledError("client disconnects")
@@ -1315,6 +1324,14 @@ class FrontendServer(object):
                             - suspended_ms,
                             3,
                         )
+                        # is_disconnected() is awaited by the non-stream caller
+                        # once per yielded frame; it force-yields to the loop, so
+                        # it can dominate the generator's suspended wall time.
+                        aux_info["fe_suspend_wo_disc_ms"] = round(
+                            suspended_ms - timing.t_disc_ns / 1_000_000.0, 3
+                        )
+                    aux_info["fe_disc_ms"] = round(timing.t_disc_ns / 1_000_000.0, 3)
+                    aux_info["fe_disc_n"] = timing.t_disc_n
                     aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
