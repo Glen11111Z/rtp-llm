@@ -68,6 +68,10 @@ class RequestTiming:
         "t_handler_entry_ns",
         "t_py_start_ns",
         "t_py_end_ns",
+        "t_rpc_start_ns",
+        "t_rpc_end_ns",
+        "t_first_outer_yield_ns",
+        "t_first_resume_ns",
         "t_handler_exit_ns",
         "t_asgi_end_ns",
         "t_resp_body_in_ns",
@@ -87,6 +91,10 @@ class RequestTiming:
         self.t_handler_entry_ns: Optional[int] = None
         self.t_py_start_ns: Optional[int] = None
         self.t_py_end_ns: Optional[int] = None
+        self.t_rpc_start_ns: Optional[int] = None
+        self.t_rpc_end_ns: Optional[int] = None
+        self.t_first_outer_yield_ns: Optional[int] = None
+        self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
         self.t_asgi_end_ns: Optional[int] = None
         self.t_resp_body_in_ns: Optional[int] = None
@@ -480,7 +488,12 @@ class FrontendServer(object):
         is_openai_response = request.get("stream", False)
         response_data_prefix = "data: " if is_openai_response else "data:"
         try:
+            first_stream_chunk = True
             async for res in response:
+                if first_stream_chunk:
+                    first_stream_chunk = False
+                    if timing is not None and timing.t_first_resume_ns is None:
+                        timing.t_first_resume_ns = time.perf_counter_ns()
                 data_str = res.model_dump_json(exclude_none=True)
                 yield response_data_prefix + data_str + "\r\n\r\n"
                 await asyncio.sleep(0)
@@ -909,7 +922,17 @@ class FrontendServer(object):
             last_observed_output_tokens = 0
             fallback_token_debt = 0
             iter_count = 0
-            async for response in response_generator:
+            response_iter = response_generator.__aiter__()
+            while True:
+                is_first = first_response
+                if is_first and timing is not None:
+                    timing.t_rpc_start_ns = time.perf_counter_ns()
+                try:
+                    response = await response_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                if is_first and timing is not None:
+                    timing.t_rpc_end_ns = time.perf_counter_ns()
                 end_time = current_time_ms()
                 if first_response:
                     first_response = False
@@ -987,6 +1010,8 @@ class FrontendServer(object):
                         )
                 last_iterate_time = end_time
                 iter_count += 1
+                if is_first and timing is not None:
+                    timing.t_first_outer_yield_ns = time.perf_counter_ns()
                 yield response
             kmonitor.report(GaugeMetrics.RESPONSE_ITERATE_COUNT, iter_count)
             if timing is not None:
@@ -1083,6 +1108,8 @@ class FrontendServer(object):
                     media_type="text/event-stream",
                 )
             async for x in res:
+                if timing is not None and timing.t_first_resume_ns is None:
+                    timing.t_first_resume_ns = time.perf_counter_ns()
                 if await raw_request.is_disconnected():
                     # Abort the request if the client disconnects.
                     await res.aclose()
@@ -1130,6 +1157,24 @@ class FrontendServer(object):
                         )
                         aux_info["fe_tail_ms"] = round(
                             (timing.t_handler_exit_ns - timing.t_py_end_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_rpc_start_ns is not None
+                        and timing.t_rpc_end_ns is not None
+                    ):
+                        aux_info["fe_rpc_rt_ms"] = round(
+                            (timing.t_rpc_end_ns - timing.t_rpc_start_ns)
+                            / 1_000_000.0,
+                            3,
+                        )
+                    if (
+                        timing.t_first_outer_yield_ns is not None
+                        and timing.t_first_resume_ns is not None
+                    ):
+                        aux_info["fe_sched_rt_ms"] = round(
+                            (timing.t_first_resume_ns - timing.t_first_outer_yield_ns)
                             / 1_000_000.0,
                             3,
                         )
