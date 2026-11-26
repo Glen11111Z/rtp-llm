@@ -19,6 +19,7 @@ from rtp_llm.config.model_config import (
     update_tokenizer_special_tokens,
 )
 from rtp_llm.frontend.frontend_worker import FrontendWorker, TokenizerEncodeResponse
+from rtp_llm.frontend import loop_profiler
 from rtp_llm.frontend.http_timing import (
     CURRENT_REQUEST_TIMING,
     SCOPE_ACCEPT_NS,
@@ -1128,6 +1129,7 @@ class FrontendServer(object):
         generate_call: Callable[[], CompleteResponseAsyncGenerator],
     ):
         assert self._frontend_worker is not None
+        loop_profiler.start()
         timing = ensure_request_timing(raw_request)
         if timing is not None:
             timing.mark_handler_entry()
@@ -1332,6 +1334,11 @@ class FrontendServer(object):
                         )
                     aux_info["fe_disc_ms"] = round(timing.t_disc_ns / 1_000_000.0, 3)
                     aux_info["fe_disc_n"] = timing.t_disc_n
+                    prof_top, prof_busy, prof_n = loop_profiler.snapshot()
+                    if prof_top is not None:
+                        aux_info["fe_prof"] = prof_top
+                        aux_info["fe_prof_busy"] = prof_busy
+                        aux_info["fe_prof_n"] = prof_n
                     aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
