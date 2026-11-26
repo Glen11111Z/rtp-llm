@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import math
+import os
 import time
 from dataclasses import replace
 from typing import Any, AsyncGenerator, Dict, Optional, Union
@@ -18,6 +19,7 @@ from rtp_llm.config.response_format_compiler import validate_engine_ready
 from rtp_llm.frontend.http_timing import CURRENT_REQUEST_TIMING
 from rtp_llm.cpp.model_rpc.proto.model_rpc_service_pb2 import (
     BatchGenerateInputPB,
+    EmptyPB,
     ErrorCodePB,
     ErrorDetailsPB,
     FetchRequestPB,
@@ -65,6 +67,18 @@ from rtp_llm.utils.grpc_util import (
 MAX_GRPC_TIMEOUT_SECONDS = 3600
 RPC_CLEANUP_TIMEOUT_SECONDS = 0.1
 RPC_SETTLE_TIMEOUT_SECONDS = 5.0
+
+# Gap-B probe: optional background CheckHealth round-trip used to strip the
+# gRPC stack + FE event-loop wakeup from the first-frame wait. Disabled unless
+# RTP_GAPB_PING_MS > 0, so the production path is unchanged by default.
+_GAPB_PING_INTERVAL_S = float(os.getenv("RTP_GAPB_PING_MS") or 0) / 1000.0
+_gapb_ping_rtt_ns = 0
+_gapb_ping_ts_ns = 0
+_gapb_ping_tasks = {}
+
+
+def get_gapb_ping():
+    return _gapb_ping_rtt_ns, _gapb_ping_ts_ns
 JsonableOption = Optional[Union[str, Dict[str, Any], bool]]
 logger = logging.getLogger(__name__)
 
@@ -1275,10 +1289,30 @@ class ModelRpcClient(object):
             else:
                 raise FtRuntimeException(ExceptionType.UNKNOWN_ERROR, e.details())
 
+    async def _gapb_ping_loop(self, target_address: str) -> None:
+        global _gapb_ping_rtt_ns, _gapb_ping_ts_ns
+        while True:
+            try:
+                channel = await self._channel_pool.get(target_address)
+                stub = RpcServiceStub(channel)
+                t0 = time.perf_counter_ns()
+                await stub.CheckHealth(EmptyPB(), timeout=1.0)
+                t1 = time.perf_counter_ns()
+                _gapb_ping_rtt_ns = t1 - t0
+                _gapb_ping_ts_ns = t1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.debug("gapb health ping failed", exc_info=True)
+            await asyncio.sleep(_GAPB_PING_INTERVAL_S)
+
     async def enqueue(
         self, input_py: GenerateInput
     ) -> AsyncGenerator[GenerateOutputs, None]:
         timing = CURRENT_REQUEST_TIMING.get()
+        if timing is not None and _GAPB_PING_INTERVAL_S > 0:
+            timing.t_ping_rtt_ns = _gapb_ping_rtt_ns
+            timing.t_ping_ts_ns = _gapb_ping_ts_ns
         request_timeout_ms = input_py.generate_config.timeout_ms
         # Prefer per-request timeout; otherwise fall back to the server-side default
         # (pd_sep_config.max_rpc_timeout_ms). effective_ms <= 0 means no gRPC
@@ -1376,6 +1410,13 @@ class ModelRpcClient(object):
             # Get channel from pool
             channel = await self._channel_pool.get(target_address)
             stub = RpcServiceStub(channel)
+            if _GAPB_PING_INTERVAL_S > 0:
+                ping_key = (id(self), target_address)
+                ping_task = _gapb_ping_tasks.get(ping_key)
+                if ping_task is None or ping_task.done():
+                    _gapb_ping_tasks[ping_key] = asyncio.create_task(
+                        self._gapb_ping_loop(target_address)
+                    )
 
             grpc_kwargs = {}
             if effective_ms > 0:

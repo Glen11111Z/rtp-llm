@@ -74,6 +74,8 @@ class RequestTiming:
         "t_rpc_send_ns",
         "t_first_backend_ns",
         "t_first_output_ns",
+        "t_ping_rtt_ns",
+        "t_ping_ts_ns",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -100,6 +102,8 @@ class RequestTiming:
         self.t_rpc_send_ns: Optional[int] = None
         self.t_first_backend_ns: Optional[int] = None
         self.t_first_output_ns: Optional[int] = None
+        self.t_ping_rtt_ns: Optional[int] = None
+        self.t_ping_ts_ns: Optional[int] = None
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -1215,9 +1219,25 @@ class FrontendServer(object):
                         aux_info["fe_rpc_backend_rt_ms"] = round(backend_ms, 3)
                         cost = aux_info.get("cost_time")
                         if isinstance(cost, (int, float)):
+                            over_native = backend_ms - cost
                             aux_info["fe_backend_over_native_rt_ms"] = round(
-                                backend_ms - cost, 3
+                                over_native, 3
                             )
+                            if timing.t_ping_rtt_ns:
+                                aux_info["fe_backend_over_wo_ping_rt_ms"] = round(
+                                    over_native - timing.t_ping_rtt_ns / 1_000_000.0,
+                                    3,
+                                )
+                    if timing.t_ping_rtt_ns:
+                        aux_info["fe_rpc_ping_rt_ms"] = round(
+                            timing.t_ping_rtt_ns / 1_000_000.0, 3
+                        )
+                    if timing.t_ping_ts_ns:
+                        aux_info["fe_rpc_ping_age_ms"] = round(
+                            (time.perf_counter_ns() - timing.t_ping_ts_ns)
+                            / 1_000_000.0,
+                            1,
+                        )
                     if (
                         timing.t_first_output_ns is not None
                         and timing.t_first_backend_ns is not None
