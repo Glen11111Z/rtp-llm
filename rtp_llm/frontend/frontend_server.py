@@ -877,6 +877,7 @@ class FrontendServer(object):
             if await raw_request.is_disconnected():
                 raise asyncio.CancelledError("client disconnects")
             res = await self._call_generate_with_report(generate_call, is_streaming)
+            gen_ready = current_time_ms() if is_batch else 0
 
             if is_streaming:
                 return StreamingResponse(
@@ -898,7 +899,22 @@ class FrontendServer(object):
                 await self._collect_complete_response_and_record_access_log(req, res)
             )
             if is_batch:
-                self._report_batch_chunk(begin_time, len(batch_prompts))
+                collect_done = current_time_ms()
+                self._report_batch_chunk(collect_done, len(batch_prompts))
+                # Chunk-level split for the root-entry prompt_batch mode (the
+                # per-prompt fan-out path): fan-out setup vs consume/merge.
+                # aux_info is what survives the Dispatcher response merge.
+                items = (
+                    complete_response.get("response_batch")
+                    if isinstance(complete_response, dict)
+                    else None
+                )
+                for item in items or []:
+                    aux = item.get("aux_info") if isinstance(item, dict) else None
+                    if isinstance(aux, dict) and aux:
+                        aux["fe_gen_setup_rt_ms"] = gen_ready - begin_time
+                        aux["fe_collect_rt_ms"] = collect_done - gen_ready
+                        aux["fe_e2e_rt_ms"] = collect_done - begin_time
             return ORJSONResponse(content=complete_response)
         except BaseException:
             if is_batch:
