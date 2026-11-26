@@ -78,6 +78,8 @@ class RequestTiming:
         "t_ping_rtt_ns",
         "t_ping_ts_ns",
         "t_loop_turn_ns",
+        "t_post_await_ns",
+        "t_post_await_n",
         "t_first_outer_yield_ns",
         "t_first_resume_ns",
         "t_handler_exit_ns",
@@ -107,6 +109,8 @@ class RequestTiming:
         self.t_ping_rtt_ns: Optional[int] = None
         self.t_ping_ts_ns: Optional[int] = None
         self.t_loop_turn_ns: Optional[int] = None
+        self.t_post_await_ns: int = 0
+        self.t_post_await_n: int = 0
         self.t_first_outer_yield_ns: Optional[int] = None
         self.t_first_resume_ns: Optional[int] = None
         self.t_handler_exit_ns: Optional[int] = None
@@ -949,12 +953,23 @@ class FrontendServer(object):
                 is_first = first_response
                 if is_first and timing is not None:
                     timing.t_rpc_start_ns = time.perf_counter_ns()
+                await_start_ns = (
+                    time.perf_counter_ns()
+                    if (not is_first and timing is not None)
+                    else None
+                )
                 try:
                     response = await response_iter.__anext__()
                 except StopAsyncIteration:
+                    if await_start_ns is not None and timing is not None:
+                        timing.t_post_await_ns += time.perf_counter_ns() - await_start_ns
+                        timing.t_post_await_n += 1
                     break
                 if is_first and timing is not None:
                     timing.t_rpc_end_ns = time.perf_counter_ns()
+                elif await_start_ns is not None and timing is not None:
+                    timing.t_post_await_ns += time.perf_counter_ns() - await_start_ns
+                    timing.t_post_await_n += 1
                 end_time = current_time_ms()
                 if first_response:
                     first_response = False
@@ -1251,6 +1266,20 @@ class FrontendServer(object):
                         aux_info["fe_loop_turn_ms"] = round(
                             timing.t_loop_turn_ns / 1_000_000.0, 3
                         )
+                    if (
+                        timing.t_rpc_end_ns is not None
+                        and timing.t_py_end_ns is not None
+                    ):
+                        post_total_ms = (
+                            timing.t_py_end_ns - timing.t_rpc_end_ns
+                        ) / 1_000_000.0
+                        post_await_ms = timing.t_post_await_ns / 1_000_000.0
+                        aux_info["fe_post_await_ms"] = round(post_await_ms, 3)
+                        aux_info["fe_post_proc_ms"] = round(
+                            post_total_ms - post_await_ms, 3
+                        )
+                        aux_info["fe_post_await_n"] = timing.t_post_await_n
+                    aux_info["fe_iters"] = iter_count
                     aux_info["fe_pid"] = os.getpid()
                     if (
                         timing.t_first_output_ns is not None
