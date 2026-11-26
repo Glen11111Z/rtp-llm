@@ -642,7 +642,18 @@ class FrontendServer(object):
                 request_id=request_id,
                 generate_config=generate_config,
             )
-            response = ORJSONResponse(content=result.model_dump(exclude_none=True))
+            worker_done = current_time_ms()
+            payload = result.model_dump(exclude_none=True)
+            dump_done = current_time_ms()
+            # Per-chunk FE split returned with the payload (aux_info is the only
+            # field the Dispatcher passes through untouched). Gauges stay as-is.
+            for item in payload.get("response_batch") or []:
+                aux = item.get("aux_info") if isinstance(item, dict) else None
+                if isinstance(aux, dict) and aux:
+                    aux["fe_worker_rt_ms"] = worker_done - begin_time
+                    aux["fe_dump_rt_ms"] = dump_done - worker_done
+                    aux["fe_e2e_rt_ms"] = dump_done - begin_time
+            response = ORJSONResponse(content=payload)
             self._report_batch_chunk(begin_time, len(prompts))
             return response
         except BaseException as error:

@@ -135,11 +135,13 @@ class FrontendWorker:
     async def batch_infer(
         self, prompts: List[str], request_id: int, generate_config: dict
     ) -> BatchPipelineResponse:
+        fe_timing: Dict[str, int] = {}
         responses = await self.pipeline.batch_infer(
             prompts=prompts,
             base_request_id=request_id,
             generate_config_json=generate_config,
             generate_env_config=self.generate_env_config,
+            timing_out=fe_timing,
         )
         # Reconstruct GenerateConfig to check flags (aux_info, calculate_loss, etc.)
         gc = self.pipeline.create_generate_config(
@@ -159,6 +161,14 @@ class FrontendWorker:
                 if gc.has_num_beams():
                     aux.beam_responses = generate_texts
                 aux_info_dict = asdict(aux)
+                # Chunk-level FE split, same value on every prompt of the chunk.
+                aux_info_dict.update(
+                    {
+                        "fe_pre_rt_ms": fe_timing.get("pre"),
+                        "fe_rpc_rt_ms": fe_timing.get("rpc"),
+                        "fe_post_rt_ms": fe_timing.get("post"),
+                    }
+                )
             prompt_logits_dict = (
                 build_prompt_logits_dict(out.prompt_logits)
                 if gc.return_prompt_logits
