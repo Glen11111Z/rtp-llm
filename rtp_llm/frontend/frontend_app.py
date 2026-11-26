@@ -504,6 +504,10 @@ class FrontendApp(object):
             loop=loop,
             http=TimedHTTPProtocol,
             log_config=get_uvicorn_logging_config(),
+            # The per-request uvicorn access line is written+flushed on the
+            # event-loop thread; it was ~17% of loop samples at K=64. Rich
+            # request logging already exists in AccessLogger.
+            access_log=os.environ.get("RTP_FE_ACCESS_LOG", "1") != "0",
             timeout_keep_alive=timeout_keep_alive,
             timeout_graceful_shutdown=(
                 None
